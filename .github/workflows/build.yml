@@ -255,7 +255,14 @@ jobs:
             sudo rm -f /usr/lib/x86_64-linux-gnu/vlc/plugins/plugins.dat /usr/lib/vlc/plugins/plugins.dat 2>/dev/null || true
             rm -rf "${HOME}"/.cache/vlc 2>/dev/null || true
             out="$(vlc --list 2>&1 || true)"
-            printf '%s\n' "$out" | grep -i gridtv || { echo "ubuntu VLC did not list gridtv" >&2; exit 1; }
+            printf '%s\n' "$out" | grep -i gridtv || {
+              echo "=== ubuntu vlc --list: gridtv/video-filter lines ===" >&2
+              printf '%s\n' "$out" | grep -iE 'gridtv|video filter' | head -20 >&2
+              echo "=== total --list lines: $(printf '%s\n' "$out" | wc -l) ===" >&2
+              echo "=== vlc -vv mention of gridtv ===" >&2
+              vlc --list -vv 2>&1 | grep -i gridtv | head -5 >&2
+              exit 1
+            }
           fi
 
   # ── release: attach the built plugins to a GitHub Release on a v* tag ──────
