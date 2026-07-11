@@ -67,23 +67,28 @@ Install: copy the `.so` into VLC's `plugins/video_filter/` dir and run
 ### Windows
 
 - Visual Studio 2022 (C++) or MinGW-w64, CMake, Git
-- **RtMidi** + **liblo**: [vcpkg](https://vcpkg.io) has `rtmidi` (`vcpkg install rtmidi`); add `liblo` too if the port is available, otherwise build liblo from source.
+- **RtMidi** + **liblo**: [vcpkg](https://vcpkg.io). Build them with the **MinGW**
+  triplet to match the compiler: `vcpkg install rtmidi liblo --triplet x64-mingw-static
+  --overlay-triplets=<vcpkg>/triplets/community`. (vcpkg's default `x64-windows`
+  triplet is MSVC and its ABI clashes with MinGW-compiled code.)
 - **VLC** from videolan.org (its `sdk/` has the headers + import libs)
 
 ```sh
 cmake -S . -B build -G Ninja ^
       -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake ^
+      -DVCPKG_TARGET_TRIPLET=x64-mingw-static ^
+      -DVCPKG_OVERLAY_TRIPLETS=<vcpkg>/triplets/community ^
       -DVLC_APP="C:/Program Files/VideoLAN/VLC"
-cmake --build build -j            # -> build/libgridtv_plugin.dll
+cmake --build build -j          # -> build/gridtv_device_test.exe, ... (the CLI tools)
 ```
 
-> **Windows plugin caveats.** (1) VLC requires the `lib<name>_plugin.<ext>` name
-> on **every** OS — the CMake already emits `libgridtv_plugin.dll`. (2) Unlike
-> macOS/Linux, a Windows plugin cannot leave VLC's symbols undefined: it must
-> link the VLC SDK import library (`libvlccore.lib` / `vlc.lib`) from the `sdk/`
-> folder. The CMake's `elseif(WIN32)` link block is a placeholder for this —
-> point it at your SDK `lib/` dir. This path is the least-tested part of the
-> project; help verifying it welcome.
+> **Windows status.** The **core library and all CLI tools build** on Windows
+> (CI produces `gridtv_device_test.exe`, `gridtv_probe.exe`, …). The **VLC
+> plugin `.dll` does not yet build**: VLC's headers use POSIX `poll()`, which
+> MinGW doesn't declare, and a Windows plugin also needs VLC's import library
+> (`libvlccore.lib`) from the VLC `sdk/`. Closing this needs the VLC Windows
+> SDK wired into the build (the roadmap item) — the MinGW path gets everything
+> *except* the plugin.
 
 ### VLC module headers
 
@@ -232,7 +237,7 @@ source change (push to `main`/`master`, or a PR).
 |---|---|---|
 | **Linux** | core lib + CLI tools + harness + VLC plugin | `libgridtv_plugin.so` |
 | **macOS** | core lib + CLI tools + harness + VLC plugin | `libgridtv_plugin.dylib` |
-| **Windows** | core lib + CLI tools _(plugin best-effort)_ | tools + `libgridtv_plugin.dll` (experimental) |
+| **Windows** | core lib + CLI tools _(plugin not yet)_ | CLI tool `.exe`s (plugin blocked on VLC `poll`/SDK) |
 
 Each run uploads its artifacts (Actions → run → Artifacts). A **`v*` tag**
 publishes them to a GitHub **Release** with auto-generated notes. The VLC module

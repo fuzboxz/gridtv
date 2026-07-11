@@ -27,8 +27,9 @@ video you play is mirrored to the grid. There is no separate app to run.
 | _Planned_ | APC40 mkII, Ableton Push, monome 256 | — |
 
 > **Platform status.** **macOS** (Apple Silicon) is the primary, fully tested
-> platform. **Linux** and **Windows** are supported and built for every release,
-> but are lighter-tested — please report what you find.
+> platform with a ready-to-install VLC plugin. **Linux** builds the same plugin.
+> **Windows** currently builds the CLI tools only — the VLC **plugin for Windows
+> is not yet available** (needs the VLC Windows SDK wired into the build).
 
 ---
 
@@ -42,7 +43,7 @@ plugins.
 |---|---|---|
 | **macOS** (Apple Silicon) | `libgridtv_plugin.dylib` | `VLC.app/Contents/MacOS/plugins/` |
 | **Linux** | `libgridtv_plugin.so` | VLC's system `plugins/` folder, or `$VLC_PLUGIN_PATH` |
-| **Windows** | `libgridtv_plugin.dll` | VLC's `plugins\` install folder, or `%VLC_PLUGIN_PATH%` |
+| **Windows** | _plugin not yet built_ — CLI tools only for now | — |
 
 VLC only loads modules named `lib<name>_plugin.<ext>` (the `lib` prefix is
 required even on Windows), which is why every download is named that way. VLC
@@ -84,16 +85,10 @@ VLC_PLUGIN_PATH=~/vlc-plugins vlc --reset-plugins-cache
 
 ### Windows
 
-Copy `libgridtv_plugin.dll` into VLC's install `plugins\` folder (needs admin),
-then refresh the cache:
-
-```powershell
-copy libgridtv_plugin.dll "C:\Program Files\VideoLAN\VLC\plugins\"
-& "C:\Program Files\VideoLAN\VLC\vlc.exe" --reset-plugins-cache
-```
-
-Without admin, set a user `VLC_PLUGIN_PATH` environment variable to a folder
-containing a `video_filter\` subfolder with the plugin inside.
+The VLC **plugin for Windows is not yet built** (it needs the VLC Windows SDK
+wired into the build — see [DEVELOPING.md](DEVELOPING.md)). The CLI tools
+(`gridtv_device_test.exe`, …) do build on Windows, but the filter itself isn't
+installable there yet. Track progress in the roadmap.
 
 ---
 
@@ -113,8 +108,7 @@ Or launch VLC with the filter on directly:
 /Applications/VLC.app/Contents/MacOS/VLC --video-filter gridtv video.mp4
 # Linux
 vlc --video-filter gridtv video.mp4
-# Windows
-vlc --video-filter gridtv video.mp4
+# Windows — plugin not yet available; see DEVELOPING.md
 ```
 
 ---
