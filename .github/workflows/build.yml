@@ -98,7 +98,7 @@ jobs:
       - name: Install dependencies (Windows, via vcpkg)
         if: runner.os == 'Windows'
         run: |
-          pip install ninja          # ensure a recent Ninja is on PATH
+          choco install ninja --limit-output --no-progress   # CMake -G Ninja needs it on PATH
           vcpkg install rtmidi liblo
 
       # ── VLC module headers (required by the plugin) ───────────────────────
@@ -126,7 +126,9 @@ jobs:
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: bash
+        continue-on-error: true   # experimental leg: never block Linux/macOS
         run: |
+          : "${VCPKG_ROOT:=/c/vcpkg}"   # canonical vcpkg root on GitHub windows runners
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVLC_APP="C:/Program Files/VideoLAN/VLC"

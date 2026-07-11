@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 
 namespace gridtv {
