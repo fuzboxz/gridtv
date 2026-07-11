@@ -98,7 +98,7 @@ jobs:
       - name: Install dependencies (Windows, via vcpkg)
         if: runner.os == 'Windows'
         run: |
-          choco install ninja --limit-output --no-progress   # CMake -G Ninja needs it on PATH
+          choco install ninja pkg-config --limit-output --no-progress
           vcpkg install rtmidi liblo
 
       # ── VLC module headers (required by the plugin) ───────────────────────
@@ -128,24 +128,29 @@ jobs:
         shell: bash
         continue-on-error: true   # experimental leg: never block Linux/macOS
         run: |
-          : "${VCPKG_ROOT:=/c/vcpkg}"   # canonical vcpkg root on GitHub windows runners
+          : "${VCPKG_ROOT:=C:/vcpkg}"   # canonical vcpkg root on GitHub windows runners
+          # rtmidi & liblo ship .pc files (vcpkg_fixup_pkgconfig) — point pkg-config at them
+          export PKG_CONFIG_PATH="$VCPKG_ROOT/installed/x64-windows/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVLC_APP="C:/Program Files/VideoLAN/VLC"
 
       # ── build (core lib + CLI tools build everywhere) ─────────────────────
       - name: Build core library + CLI tools
+        shell: bash
         run: |
           cmake --build build -j \
             --target gridtv_device_test gridtv_probe gridtv_midi_probe gridtv_monome_mock
         continue-on-error: ${{ runner.os == 'Windows' }}
 
       - name: Build VLC plugin
+        shell: bash
         run: cmake --build build -j --target gridtv_plugin
         continue-on-error: ${{ runner.os == 'Windows' }}
 
       - name: Build libVLC harness
         # Optional dev tool; only available where libvlc headers exist.
+        shell: bash
         run: cmake --build build -j --target gridtv_vlc
         continue-on-error: true
 
