@@ -152,16 +152,19 @@ endif()
 # Drop into VLC.app/Contents/MacOS/plugins/ and run:
 #   VLC --video-filter gridtv video.mp4
 # ----------------------------------------------------------------------------
-if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include/vlc_plugin.h")
-    add_library(gridtv_plugin MODULE module_vlc/gridtv_plugin.cpp)
-    # VLC module headers: prefer the distro's (libvlccore-dev) when present — it
-    # carries distro ABI patches the upstream headers lack. Notably Debian/Ubuntu
-    # patched the glibc time64 transition (MODULE_SYMBOL 3_0_0ft64) so a module
-    # built against upstream headers (vlc_entry__3_0_0f) WON'T LOAD in their VLC.
+# Resolve the VLC module headers: prefer the distro's (libvlccore-dev, which
+# carries distro ABI patches like Debian/Ubuntu's time64 "t64" suffix) when
+# present; else the vendored upstream headers. A module built against the
+# wrong set won't load (entry symbol name mismatch).
+set(GRIDTV_VLC_INC "")
+if(EXISTS "/usr/include/vlc/plugins/vlc_plugin.h")
+    set(GRIDTV_VLC_INC "/usr/include/vlc/plugins")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include/vlc_plugin.h")
     set(GRIDTV_VLC_INC "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include")
-    if(EXISTS "/usr/include/vlc/plugins/vlc_plugin.h")
-        set(GRIDTV_VLC_INC "/usr/include/vlc/plugins")
-    endif()
+endif()
+
+if(GRIDTV_VLC_INC)
+    add_library(gridtv_plugin MODULE module_vlc/gridtv_plugin.cpp)
     target_include_directories(gridtv_plugin PRIVATE "${GRIDTV_VLC_INC}")
     target_link_libraries(gridtv_plugin PRIVATE gridtv) # pulls RtMidi (+CoreMIDI on macOS)
     # MinGW: VLC's headers call poll() / use struct pollfd (vlc_threads.h), which
