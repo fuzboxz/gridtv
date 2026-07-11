@@ -141,20 +141,14 @@ jobs:
             echo "vlc headers already present"
             exit 0
           fi
-          # Match the headers to the VLC installed on the runner, so the plugin's
-          # module-ABI entry symbol matches what this VLC will load. VLC 3.0.x
-          # bumped the ABI suffix mid-series (e.g. 3.0.20 vs 3.0.23), so a plugin
+          # Match the headers to the VLC on the runner: VLC 3.0.x bumped its
+          # module-ABI entry suffix mid-series (e.g. 3.0.20 vs 3.0.23), so a plugin
           # built against the wrong headers won't load.
-          VLC_BIN=""
-          if command -v vlc >/dev/null 2>&1; then VLC_BIN=vlc; fi
-          if [ -z "$VLC_BIN" ] && [ -x /Applications/VLC.app/Contents/MacOS/VLC ]; then
-            VLC_BIN=/Applications/VLC.app/Contents/MacOS/VLC
+          VLC_VER="$(pkg-config --modversion libvlc 2>/dev/null || true)"   # Linux (libvlc-dev)
+          if [ -z "$VLC_VER" ] && [ -x /Applications/VLC.app/Contents/MacOS/VLC ]; then
+            VLC_VER="$(/Applications/VLC.app/Contents/MacOS/VLC --version 2>&1 | head -n1 | cut -d' ' -f3)"   # macOS
           fi
-          VLC_VER=""
-          if [ -n "$VLC_BIN" ]; then
-            VLC_VER="$("$VLC_BIN" --version 2>&1 | head -n1 | cut -d' ' -f3)"
-          fi
-          [ -n "$VLC_VER" ] || VLC_VER=3.0.23
+          [ -n "$VLC_VER" ] || VLC_VER=3.0.23   # Windows / fallback
           echo "Fetching VLC $VLC_VER headers"
           git clone --depth 1 --branch "$VLC_VER" --filter=blob:none --sparse \
             https://github.com/videolan/vlc.git third_party/vlc-src
