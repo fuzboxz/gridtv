@@ -182,8 +182,12 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include/vlc_plugin.h")
             target_link_options(gridtv_plugin PRIVATE "-Wl,--unresolved-symbols=ignore-all")
         endif()
     elseif(UNIX)
-        # Linux/BSD: shared object may leave VLC symbols undefined (resolved at load).
-        target_link_options(gridtv_plugin PRIVATE "-Wl,--allow-shlib-undefined")
+        # Linux/BSD: link VLC's core libs so the plugin's vlc_*/picture_*/image_*
+        # symbols resolve at link time. (Relying on the host VLC to expose
+        # libvlccore globally to dlopened modules is unreliable across distros.)
+        find_library(VLCCORE_LIB vlccore)
+        find_library(VLC_LIB vlc)
+        target_link_libraries(gridtv_plugin PRIVATE ${VLCCORE_LIB} ${VLC_LIB})
     endif()
     # Plugin filename per platform: lib...dylib (macOS), lib...so (Linux), ...dll (Windows).
     if(APPLE)

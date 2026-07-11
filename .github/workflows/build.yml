@@ -92,7 +92,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config \
-            librtmidi-dev liblo-dev libvlc-dev
+            librtmidi-dev liblo-dev libvlc-dev libvlccore-dev
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
