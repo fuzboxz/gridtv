@@ -46,10 +46,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
       - name: Install actionlint
         run: |
-          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash)
           echo "$PWD" >> "$GITHUB_PATH"
       - name: Install pyyaml (optional; the check degrades without it)
         run: python3 -m pip install --user pyyaml || true
@@ -77,7 +79,9 @@ jobs:
             plugin: libgridtv_plugin.dll
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
 
       # ── dependencies ──────────────────────────────────────────────────────
       - name: Install dependencies (Linux)
@@ -113,6 +117,9 @@ jobs:
           LIBCC_DLL="$(find /tmp/vlcsdk -name libvlccore.dll | head -1)"
           test -n "$LIBCC_DLL" || { echo "ERROR: libvlccore.dll not in package"; ls /tmp/vlcsdk; exit 1; }
           VLCBIN="$(dirname "$LIBCC_DLL")"
+          # Guard the $GITHUB_ENV write below: a newline in a path (e.g. from a
+          # tampered archive) is the classic env-injection vector.
+          case "$VLCBIN" in *$'\n'*) echo "ERROR: suspicious (newline-bearing) path in VLC SDK"; exit 1;; esac
           ( cd "$VLCBIN" \
             && gendef libvlccore.dll && dlltool -d libvlccore.def -l libvlccore.dll.a \
             && gendef libvlc.dll    && dlltool -d libvlc.def    -l libvlc.dll.a )
@@ -177,7 +184,7 @@ jobs:
 
       # ── artifacts ─────────────────────────────────────────────────────────
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: gridtv-${{ matrix.os }}
           if-no-files-found: warn
@@ -194,6 +201,7 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     concurrency:
@@ -201,14 +209,17 @@ jobs:
       cancel-in-progress: false   # never cancel a release mid-publish
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Attach plugins to the release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            artifacts/*gridtv_plugin*
-          generate_release_notes: true
+      - name: Attach plugins to the GitHub Release
+        # Built-in gh CLI (no third-party action with write scope). Tag name
+        # goes through an env var, not a ${{ }} in run:, to avoid injection.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --generate-notes artifacts/*gridtv_plugin* 2>/dev/null \
+            || gh release upload "$TAG" artifacts/*gridtv_plugin* --clobber
