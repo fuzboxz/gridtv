@@ -108,13 +108,13 @@ static void gridtv_connect_error_dialog(filter_t* f, GridDevice* dev, const char
 // / tone modes mid-playback. Max FPS is intentionally excluded: it only paces.
 struct Settings {
     int pick, aspect, color_order;
-    float gamma, contrast, saturation, lift, brightness;
+    float gamma, contrast, saturation, lift, brightness, led_gamma;
     int bits, delta;
     bool operator!=(const Settings& o) const {
         return std::tie(pick, aspect, color_order, gamma, contrast, saturation,
-                        lift, brightness, bits, delta)
+                        lift, brightness, led_gamma, bits, delta)
              != std::tie(o.pick, o.aspect, o.color_order, o.gamma, o.contrast,
-                         o.saturation, o.lift, o.brightness, o.bits, o.delta);
+                         o.saturation, o.lift, o.brightness, o.led_gamma, o.bits, o.delta);
     }
 };
 
@@ -186,6 +186,11 @@ static void filter_worker(filter_sys_t* sys) {
         if (bright > 1.0f) bright = 1.0f;
         int bits = var_InheritInteger(sys->self, "gridtv-bits");
         if (bits < 1) bits = 1; else if (bits > 8) bits = 8;
+        // LED display curve: controller LEDs are driven ~linearly while video is
+        // gamma-encoded, so raw values look flat/washed. pow(v, led_gamma) deepens
+        // mid-tones + shadows to match the screen (also lifts perceived colour).
+        float led_gamma = var_InheritFloat(sys->self, "gridtv-ledgamma");
+        if (led_gamma < 1.0f) led_gamma = 1.0f; else if (led_gamma > 3.0f) led_gamma = 3.0f;
         const int delta   = var_InheritInteger(sys->self, "gridtv-delta");
         const int order_i = var_InheritInteger(sys->self, "gridtv-color");
         // gridtv-colorpick / gridtv-aspect drive the downscale on the VLC thread
@@ -196,7 +201,7 @@ static void filter_worker(filter_sys_t* sys) {
         sys->dev->set_change_threshold(delta);
 
         Settings cur{pick_i, aspect_i, order_i,
-                     gamma, contrast, saturation, lift, bright, bits, delta};
+                     gamma, contrast, saturation, lift, bright, led_gamma, bits, delta};
         if (cur != prev) {
             prev = cur;
             // A live setting changed. Rebuild the per-channel LUT (bakes in
@@ -216,6 +221,7 @@ static void filter_worker(filter_sys_t* sys) {
                 v = lift + gain * v;                                          // black lift
                 v *= bright;                                                 // grid brightness
                 if (v < 0.0f) v = 0.0f; else if (v > 1.0f) v = 1.0f;
+                v = std::pow(v, led_gamma);                                  // LED display curve (match the screen)
                 v = std::rint(v * levels) / levels;                          // posterize
                 sys->lut[i] = static_cast<std::uint8_t>(v * 255.0f + 0.5f);
             }
@@ -630,9 +636,9 @@ vlc_module_begin()
         "(works for any Launchpad: Mini MK3, X, Pro MK3, MK2 or Pro gen1).\n"
         "  3. Play any video. The grid lights up within a second or two.\n\n"
         "WHAT YOU CAN CHANGE LIVE\n"
-        "  Brightness, gamma, contrast, saturation, lift, bit depth, max FPS, "
-        "colour-pick and fit all update instantly while the video plays - no "
-        "need to restart playback.\n\n"
+        "  Brightness, gamma, LED display curve, contrast, saturation, lift, "
+        "bit depth, max FPS, colour-pick and fit all update instantly while the "
+        "video plays - no restart needed.\n\n"
         "WHAT NEEDS A RE-OPEN\n"
         "  'Device' and 'Custom MIDI port' are read when a media item opens. "
         "To switch hardware, stop the current item, choose the new device, then "
@@ -718,6 +724,19 @@ vlc_module_begin()
                            N_("Bit depth"), N_("Posterize each colour channel to "
                            "this many bits: 8 = full colour, lower = fewer, chunkier "
                            "colours for a retro look."), false)
+        change_safe()
+    add_float_with_range("gridtv-ledgamma", 2.0f, 1.0f, 3.0f,
+                         N_("LED display curve (gamma)"), N_("Compensates for the "
+                         "controller's near-linear LED response so the colours and "
+                         "brightness on the grid match your screen. The LED levels "
+                         "are roughly linear in light output, but video is gamma-"
+                         "encoded - so without correction (1.0) mid-tones look flat "
+                         "and washed out and colours lose punch. 2.0-2.4 deepens them "
+                         "to look vibrant and screen-accurate; raise it for a "
+                         "punchier, contrasty look, lower toward 1.0 for a flatter "
+                         "raw look. Applies to every device (Launchpad, monome, "
+                         "classic). Tip: play a familiar scene, set it so the grid's "
+                         "greys and skin tones look about as bright as on screen."), false)
         change_safe()
 
     set_section(N_("Output"), N_("Final output level, speed and stability."))

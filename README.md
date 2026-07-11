@@ -194,6 +194,7 @@ also be passed as `--gridtv-<name>` flags. Most update **live** while video play
 | **Saturation** | float 0–3 | `1.0` | Colour saturation (0 = greyscale; no effect on monochrome devices) |
 | **Black lift** | float 0–1 | `0.0` | Raises the black floor so "off" reads dim-grey instead of fully dark |
 | **Bit depth** | int 1–8 | `8` | Posterize each channel for a chunky retro look (8 = full colour) |
+| **LED display curve (gamma)** | float 1–3 | `2.0` | Makes grid colours/brightness match the screen. LEDs are ~linear while video is gamma-encoded, so raw values look flat/washed — this deepens mid-tones (2.0–2.4 = vibrant & screen-accurate; 1.0 = flat/raw). Applies to every device |
 | **Grid brightness** | float 0–1 | `1.0` | Master dim of the whole grid (dims the lift floor too) |
 | **Max FPS** | int 0–60 | `0` | Frame-rate cap (0 = device default; the grid rarely needs >25) |
 | **Change threshold** | int 0–64 | `0` | Anti-flicker: re-send only when a channel changes by more than this (raise to 2–4 to freeze near-static content) |
@@ -212,6 +213,16 @@ also be passed as `--gridtv-<name>` flags. Most update **live** while video play
 3. **monome?** Make sure `serialosc` is running and the grid is plugged in.
 4. **Launchpad?** Check the USB cable and that **Device** matches a port from the
    message log (or use **Auto-detect**).
+
+### Colours look washed out / not as vibrant as the screen
+
+This is expected with the default raw mapping and is what **LED display curve
+(gamma)** fixes. Controller LEDs are driven ~linearly while video is gamma-
+encoded, so straight values come out flat. While a familiar scene plays, raise
+**LED display curve** to **2.0–2.4** (the default) so greys and skin tones look
+about as bright on the grid as on screen; bump **Saturation** a little (e.g.
+1.2–1.4) for extra pop. (LEDs also have a smaller colour gamut than a monitor,
+so a perfect match isn't possible — but this gets close.)
 
 When you close VLC, GridTV automatically blanks the grid and disconnects cleanly.
 
