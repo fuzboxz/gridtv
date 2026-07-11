@@ -97,9 +97,7 @@ jobs:
 
       - name: Install dependencies (Windows, via vcpkg)
         if: runner.os == 'Windows'
-        run: |
-          choco install ninja --limit-output --no-progress
-          vcpkg install rtmidi liblo
+        run: vcpkg install rtmidi liblo
 
       # ── VLC module headers (required by the plugin) ───────────────────────
       # The plugin compiles against VLC's internal module headers
@@ -129,7 +127,10 @@ jobs:
         continue-on-error: true   # experimental leg: never block Linux/macOS
         run: |
           : "${VCPKG_ROOT:=C:/vcpkg}"   # canonical vcpkg root on GitHub windows runners
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          # Use the Visual Studio generator (NOT Ninja): the runner's default
+          # compiler under bash is MinGW, whose ABI clashes with vcpkg's MSVC
+          # x64-windows libs. The VS generator drives MSVC, matching vcpkg.
+          cmake -S . -B build -G "Visual Studio 17 2022" \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVLC_APP="C:/Program Files/VideoLAN/VLC"
 
@@ -137,19 +138,19 @@ jobs:
       - name: Build core library + CLI tools
         shell: bash
         run: |
-          cmake --build build -j \
+          cmake --build build --config Release -j \
             --target gridtv_device_test gridtv_probe gridtv_midi_probe gridtv_monome_mock
         continue-on-error: ${{ runner.os == 'Windows' }}
 
       - name: Build VLC plugin
         shell: bash
-        run: cmake --build build -j --target gridtv_plugin
+        run: cmake --build build --config Release -j --target gridtv_plugin
         continue-on-error: ${{ runner.os == 'Windows' }}
 
       - name: Build libVLC harness
         # Optional dev tool; only available where libvlc headers exist.
         shell: bash
-        run: cmake --build build -j --target gridtv_vlc
+        run: cmake --build build --config Release -j --target gridtv_vlc
         continue-on-error: true
 
       # ── artifacts ─────────────────────────────────────────────────────────
@@ -159,13 +160,12 @@ jobs:
           name: gridtv-${{ matrix.os }}
           if-no-files-found: warn
           path: |
-            build/*gridtv_plugin*
-            build/gridtv_vlc*
-            build/gridtv_device_test*
-            build/gridtv_probe
-            build/gridtv_probe.exe
-            build/gridtv_midi_probe*
-            build/gridtv_monome_mock*
+            build/**/*gridtv_plugin*
+            build/**/gridtv_vlc*
+            build/**/gridtv_device_test*
+            build/**/gridtv_probe*
+            build/**/gridtv_midi_probe*
+            build/**/gridtv_monome_mock*
 
   # ── release: attach the built plugins to a GitHub Release on a v* tag ──────
   release:
