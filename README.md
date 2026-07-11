@@ -35,21 +35,28 @@ video you play is mirrored to the grid. There is no separate app to run.
 
 ## Install
 
-You don't need to build anything. Grab the prebuilt plugin for your OS from the
-**[GitHub Releases](../../releases)** page, then drop it where VLC looks for
-plugins.
+You don't need to build anything. Grab the prebuilt plugin for your OS **and
+the matching installer** from the **[GitHub Releases](../../releases)** page,
+then run the installer — it installs the plugin plus its runtime deps
+(rtmidi/liblo) into the right place for you:
 
-| OS | Download | Where VLC looks for plugins |
-|---|---|---|
-| **macOS** (Apple Silicon) | `libgridtv_plugin.dylib` | `VLC.app/Contents/MacOS/plugins/` |
-| **Linux** | `libgridtv_plugin.so` | VLC's system `plugins/` folder, or `$VLC_PLUGIN_PATH` |
-| **Windows** | `libgridtv_plugin.dll` | VLC's `plugins\` install folder, or `%VLC_PLUGIN_PATH%` |
+```sh
+# macOS / Linux
+chmod +x install.sh && ./install.sh libgridtv_plugin.dylib   # or .so
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -File windows.ps1 -Plugin libgridtv_plugin.dll
+```
 
-VLC only loads modules named `lib<name>_plugin.<ext>` (the `lib` prefix is
-required even on Windows), which is why every download is named that way. VLC
-scans its install `plugins` folder and the `VLC_PLUGIN_PATH` environment
-variable — **not** arbitrary per-user folders — so if a copy doesn't load, run
-VLC once with `--reset-plugins-cache` to force a rescan.
+| OS | Plugin | Installer | What it does |
+|---|---|---|---|
+| **macOS** (Apple Silicon) | `libgridtv_plugin.dylib` | `install.sh` | deps via Homebrew → `~/Library/Application Support/gridtv/` + `VLC_PLUGIN_PATH` (no modifying the signed VLC.app) |
+| **Linux** | `libgridtv_plugin.so` | `install.sh` | deps via apt → VLC's system `plugins/video_filter/` (auto-scanned) |
+| **Windows** | `libgridtv_plugin.dll` | `windows.ps1` | `%LOCALAPPDATA%\gridtv\` + `VLC_PLUGIN_PATH` |
+
+Then verify: `vlc --list | grep -i gridtv`, and enable GridTV in **VLC → Settings
+(Show All) → Video → Filters → GridTV**. (Manual alternative: VLC loads modules
+named `lib<name>_plugin.<ext>` from its `plugins/` folder or `VLC_PLUGIN_PATH`;
+run `vlc --reset-plugins-cache` if it doesn't pick up a hand-copied file.)
 
 ### macOS
 
