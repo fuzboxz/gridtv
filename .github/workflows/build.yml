@@ -105,6 +105,11 @@ jobs:
           # MSVC (x64-windows) libs. x64-mingw-static is a vcpkg community triplet.
           vcpkg install rtmidi liblo --triplet x64-mingw-static \
             --overlay-triplets="$VCPKG_ROOT/triplets/community"
+          # A Windows VLC DLL must bind its imports at link time (unlike an ELF
+          # .so). Pull VLC's MinGW import libs from the win64 sdk/.
+          curl -L -o /tmp/vlc.7z https://download.videolan.org/pub/videolan/vlc/3.0.23/win64/vlc-3.0.23-win64.7z
+          7z x /tmp/vlc.7z -o/tmp/vlcsdk -y libvlccore.dll.a libvlc.dll.a >/dev/null
+          echo "VLC_SDK_LIB=$(dirname "$(find /tmp/vlcsdk -name libvlccore.dll.a | head -1)")" >> "$GITHUB_ENV"
 
       # ── VLC module headers (required by the plugin) ───────────────────────
       # The plugin compiles against VLC's internal module headers
@@ -140,6 +145,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=x64-mingw-static \
             -DVCPKG_OVERLAY_TRIPLETS="$VCPKG_ROOT/triplets/community" \
+            -DVLC_SDK_LIB="${VLC_SDK_LIB}" \
             -DVLC_APP="C:/Program Files/VideoLAN/VLC"
 
       # ── build (core lib + CLI tools build everywhere) ─────────────────────

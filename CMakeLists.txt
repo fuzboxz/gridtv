@@ -170,8 +170,17 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include/vlc_plugin.h")
             "-Wl,-undefined,dynamic_lookup"
             "-Wl,-rpath,/opt/homebrew/opt/rtmidi/lib")
     elseif(MINGW)
-        # Windows DLL: leave vlc_* undefined; VLC (libvlccore) resolves them at load.
-        target_link_options(gridtv_plugin PRIVATE "-Wl,--unresolved-symbols=ignore-all")
+        # A Windows DLL must bind its imports at link time (unlike an ELF .so). VLC's
+        # MinGW import libs ship in the win64 sdk/ — point VLC_SDK_LIB at the dir
+        # holding libvlccore.dll.a (CI fetches it). With it the vlc_*/picture_*
+        # symbols resolve; without it, fall back to allowing undefined.
+        set(VLC_SDK_LIB "" CACHE PATH "VLC win64 sdk/lib dir (libvlccore.dll.a, libvlc.dll.a)")
+        if(EXISTS "${VLC_SDK_LIB}/libvlccore.dll.a")
+            target_link_libraries(gridtv_plugin PRIVATE
+                "${VLC_SDK_LIB}/libvlccore.dll.a" "${VLC_SDK_LIB}/libvlc.dll.a")
+        else()
+            target_link_options(gridtv_plugin PRIVATE "-Wl,--unresolved-symbols=ignore-all")
+        endif()
     elseif(UNIX)
         # Linux/BSD: shared object may leave VLC symbols undefined (resolved at load).
         target_link_options(gridtv_plugin PRIVATE "-Wl,--allow-shlib-undefined")
