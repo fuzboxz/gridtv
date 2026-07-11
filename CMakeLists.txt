@@ -50,7 +50,7 @@ else()
         INTERFACE_COMPILE_DEFINITIONS "${_rtmidi_backend}")
 
     find_library(LIBLO_LIB NAMES lo liblo REQUIRED)
-    find_path(LIBLO_INC NAMES lo.h PATH_SUFFIXES lo REQUIRED)
+    find_path(LIBLO_INC NAMES lo/lo.h REQUIRED)   # code does #include <lo/lo.h> -> need the dir above lo/
     add_library(gridtv_liblo INTERFACE IMPORTED)
     set_target_properties(gridtv_liblo PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES "${LIBLO_INC}"
