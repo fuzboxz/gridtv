@@ -229,7 +229,7 @@ jobs:
         with:
           name: gridtv-${{ matrix.os }}
           path: plugin
-      - name: Install via install.sh + verify VLC can use gridtv
+      - name: Install via install.sh + verify VLC lists gridtv
         shell: bash
         run: |
           set -e
@@ -239,32 +239,12 @@ jobs:
             sh install/install.sh "$(find plugin -name 'libgridtv_plugin.dylib' | head -n1)"
             DEST="$HOME/Library/Application Support/gridtv"
             test -f "$DEST/libgridtv_plugin.dylib"
-            out="$(VLC_PLUGIN_PATH="$DEST" /Applications/VLC.app/Contents/MacOS/VLC --list 2>&1 || true)"
-            printf '%s\n' "$out" | grep -i gridtv || { echo "macOS VLC did not load gridtv:" >&2; printf '%s\n' "$out" | tail -8 >&2; exit 1; }
+            VLC_PLUGIN_PATH="$DEST" /Applications/VLC.app/Contents/MacOS/VLC --list 2>&1 | grep -i gridtv
           else
-            # Linux: install.sh copies into VLC's system folder (sudo, seamless)
+            # Linux: install.sh copies into VLC's system folder; VLC lists it.
             sh install/install.sh "$(find plugin -name 'libgridtv_plugin.so' | head -n1)"
-            SO="/usr/lib/x86_64-linux-gnu/vlc/plugins/video_filter/libgridtv_plugin.so"
-            [ -f "$SO" ] || SO="/usr/lib/vlc/plugins/video_filter/libgridtv_plugin.so"
-            test -f "$SO"
-            # Authoritative load check: VLC's own dlopen+dlsym must accept the
-            # module (this is exactly what VLC's module loader does).
-            gcc test/probe_dlopen.c -o /tmp/probe -ldl
-            /tmp/probe "$SO" | tee /tmp/probe.out
-            grep -q 'plugin dlopen: ok' /tmp/probe.out
-            grep -q 'dlsym(vlc_entry__3_0_0f): FOUND' /tmp/probe.out
-            # Does VLC actually list it? Try the system dir (cache-dependent) AND
-            # VLC_PLUGIN_PATH (always scanned fresh) — the plugin loads cleanly
-            # now, so VLC_PLUGIN_PATH should surface it.
-            T="$(mktemp -d)"; cp "$SO" "$T"/
-            if VLC_PLUGIN_PATH="$T" vlc --list 2>/dev/null | grep -qi gridtv; then
-              echo "vlc --list (via VLC_PLUGIN_PATH) shows gridtv ✓"
-            elif vlc --reset-plugins-cache --list 2>/dev/null | grep -qi gridtv; then
-              echo "vlc --list (system dir, cache reset) shows gridtv ✓"
-            else
-              echo "NOTE: vlc --list didn't show gridtv either way on this runner (cache/scan quirk; loadability is proven by the probe above)."
-            fi
-            rm -rf "$T"
+            vlc --reset-plugins-cache >/dev/null 2>&1 || true
+            vlc --list 2>&1 | grep -i gridtv
           fi
 
   # ── release: attach the built plugins to a GitHub Release on a v* tag ──────

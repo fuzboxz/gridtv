@@ -74,7 +74,8 @@ EOF
         VLP=""
         for d in "$(pkg-config --variable=plugindir vlc-plugin 2>/dev/null)" \
                  /usr/lib/vlc/plugins \
-                 /usr/lib/x86_64-linux-gnu/vlc/plugins; do
+                 /usr/lib/x86_64-linux-gnu/vlc/plugins \
+                 /usr/lib/aarch64-linux-gnu/vlc/plugins; do
             [ -n "$d" ] && [ -d "$d" ] && { VLP="$d"; break; }
         done
         [ -n "$VLP" ] || { echo "gridtv: can't find VLC's plugins directory." >&2; exit 1; }

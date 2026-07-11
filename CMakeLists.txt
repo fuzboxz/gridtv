@@ -154,8 +154,15 @@ endif()
 # ----------------------------------------------------------------------------
 if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include/vlc_plugin.h")
     add_library(gridtv_plugin MODULE module_vlc/gridtv_plugin.cpp)
-    target_include_directories(gridtv_plugin PRIVATE
-        "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include")
+    # VLC module headers: prefer the distro's (libvlccore-dev) when present — it
+    # carries distro ABI patches the upstream headers lack. Notably Debian/Ubuntu
+    # patched the glibc time64 transition (MODULE_SYMBOL 3_0_0ft64) so a module
+    # built against upstream headers (vlc_entry__3_0_0f) WON'T LOAD in their VLC.
+    set(GRIDTV_VLC_INC "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include")
+    if(EXISTS "/usr/include/vlc/plugins/vlc_plugin.h")
+        set(GRIDTV_VLC_INC "/usr/include/vlc/plugins")
+    endif()
+    target_include_directories(gridtv_plugin PRIVATE "${GRIDTV_VLC_INC}")
     target_link_libraries(gridtv_plugin PRIVATE gridtv) # pulls RtMidi (+CoreMIDI on macOS)
     # MinGW: VLC's headers call poll() / use struct pollfd (vlc_threads.h), which
     # the runner's MinGW doesn't declare (no <poll.h>). Force-include a tiny
