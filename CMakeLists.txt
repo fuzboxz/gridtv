@@ -158,10 +158,11 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include/vlc_plugin.h")
         "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include")
     target_link_libraries(gridtv_plugin PRIVATE gridtv) # pulls RtMidi (+CoreMIDI on macOS)
     # MinGW: VLC's headers call poll() / use struct pollfd (vlc_threads.h), which
-    # MinGW doesn't declare by default. Newer MinGW-w64 ships <poll.h> providing
-    # both, so force-include it before the VLC headers.
+    # the runner's MinGW doesn't declare (no <poll.h>). Force-include a tiny
+    # local shim with the declarations so the VLC headers compile.
     if(MINGW)
-        target_compile_options(gridtv_plugin PRIVATE -include poll.h)
+        target_include_directories(gridtv_plugin PRIVATE "${CMAKE_SOURCE_DIR}/module_vlc")
+        target_compile_options(gridtv_plugin PRIVATE -include win_poll_shim.h)
     endif()
     # VLC core symbols (vlc_*, picture_*) resolve at runtime from VLC itself.
     if(APPLE)
