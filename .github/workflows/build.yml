@@ -251,7 +251,7 @@ jobs:
             # exactly where it fails (dlopen unresolved-symbol vs dlsym entry).
             gcc test/probe_dlopen.c -o /tmp/probe -ldl
             /tmp/probe "$SO" >&2 || true
-            # Real assertion (currently failing on ubuntu VLC 3.0.20):
+            vlc --reset-plugins-cache >/dev/null 2>&1 || true   # rescan so the new .so is picked up
             out="$(vlc --list 2>&1 || true)"
             printf '%s\n' "$out" | grep -i gridtv || { echo "ubuntu VLC did not list gridtv" >&2; exit 1; }
           fi
