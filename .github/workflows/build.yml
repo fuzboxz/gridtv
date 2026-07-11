@@ -106,14 +106,18 @@ jobs:
           vcpkg install rtmidi liblo --triplet x64-mingw-static \
             --overlay-triplets="$VCPKG_ROOT/triplets/community"
           # A Windows VLC DLL must bind its imports at link time (unlike an ELF
-          # .so). Pull VLC's MinGW import libs from the win64 sdk/ (extract the
-          # archive, then locate libvlccore.dll.a anywhere under it).
+          # .so). The win64 package is runtime-only (no sdk/ import libs), so
+          # generate MinGW import libs from its libvlccore.dll / libvlc.dll.
           curl -fL -o /tmp/vlc.7z https://download.videolan.org/pub/videolan/vlc/3.0.23/win64/vlc-3.0.23-win64.7z
           7z x /tmp/vlc.7z -o/tmp/vlcsdk -y >/dev/null
-          LIBCC="$(find /tmp/vlcsdk -name libvlccore.dll.a | head -1)"
-          test -n "$LIBCC" || { echo "ERROR: libvlccore.dll.a not found in SDK"; ls /tmp/vlcsdk; exit 1; }
-          echo "VLC_SDK_LIB=$(dirname "$LIBCC")" >> "$GITHUB_ENV"
-          echo "VLC import lib dir: $(dirname "$LIBCC")"
+          LIBCC_DLL="$(find /tmp/vlcsdk -name libvlccore.dll | head -1)"
+          test -n "$LIBCC_DLL" || { echo "ERROR: libvlccore.dll not in package"; ls /tmp/vlcsdk; exit 1; }
+          VLCBIN="$(dirname "$LIBCC_DLL")"
+          ( cd "$VLCBIN" \
+            && gendef libvlccore.dll && dlltool -d libvlccore.def -l libvlccore.dll.a \
+            && gendef libvlc.dll    && dlltool -d libvlc.def    -l libvlc.dll.a )
+          echo "VLC_SDK_LIB=$VLCBIN" >> "$GITHUB_ENV"
+          echo "Generated VLC import libs in $VLCBIN"
 
       # ── VLC module headers (required by the plugin) ───────────────────────
       # The plugin compiles against VLC's internal module headers
