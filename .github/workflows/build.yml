@@ -196,6 +196,45 @@ jobs:
             build/**/gridtv_midi_probe*
             build/**/gridtv_monome_mock*
 
+  # ── smoke: install the plugin from the build artifacts and confirm VLC loads it
+  smoke:
+    needs: build
+    name: Smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+      - name: Install VLC
+        shell: bash
+        run: |
+          if [ "$(uname -s)" = "Darwin" ]; then brew install --cask vlc; \
+          else sudo apt-get update && sudo apt-get install -y --no-install-recommends vlc; fi
+      - name: Download the built plugin for this OS
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: gridtv-${{ matrix.os }}
+          path: plugin
+      - name: Install via install.sh (isolated HOME) + verify VLC loads gridtv
+        shell: bash
+        run: |
+          set -e
+          export HOME="$(mktemp -d)"          # don't touch the runner's real profile
+          ext="$(uname -s | grep -q Darwin && echo dylib || echo so)"
+          PLUGIN="$(find plugin -name "libgridtv_plugin.$ext" | head -1)"
+          test -n "$PLUGIN"
+          sh install/install.sh "$PLUGIN"
+          DEST="$HOME/Library/Application Support/gridtv"; [ -d "$DEST" ] || DEST="$HOME/.local/share/gridtv"
+          test -f "$DEST/libgridtv_plugin.$ext"
+          VLC="$(uname -s | grep -q Darwin && echo /Applications/VLC.app/Contents/MacOS/VLC || echo vlc)"
+          # The key assertion: VLC discovers the plugin purely via VLC_PLUGIN_PATH.
+          VLC_PLUGIN_PATH="$DEST" "$VLC" --list 2>/dev/null | grep -i gridtv
+
   # ── release: attach the built plugins to a GitHub Release on a v* tag ──────
   release:
     needs: build
@@ -208,18 +247,22 @@ jobs:
       group: ${{ github.workflow }}-release-${{ github.ref }}
       cancel-in-progress: false   # never cancel a release mid-publish
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
       - name: Download all build artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Attach plugins to the GitHub Release
+      - name: Attach plugins + installers to the GitHub Release
         # Built-in gh CLI (no third-party action with write scope). Tag name
         # goes through an env var, not a ${{ }} in run:, to avoid injection.
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" --generate-notes artifacts/*gridtv_plugin* 2>/dev/null \
-            || gh release upload "$TAG" artifacts/*gridtv_plugin* --clobber
+          gh release create "$TAG" --generate-notes \
+            artifacts/*gridtv_plugin* install/install.sh install/windows.ps1 2>/dev/null \
+            || gh release upload "$TAG" artifacts/*gridtv_plugin* install/install.sh install/windows.ps1 --clobber
