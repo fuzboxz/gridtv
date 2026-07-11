@@ -157,11 +157,20 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include/vlc_plugin.h")
     target_include_directories(gridtv_plugin PRIVATE
         "${CMAKE_SOURCE_DIR}/third_party/vlc-src/include")
     target_link_libraries(gridtv_plugin PRIVATE gridtv) # pulls RtMidi (+CoreMIDI on macOS)
+    # MinGW: VLC's headers call poll() / use struct pollfd (vlc_threads.h), which
+    # MinGW doesn't declare by default. Newer MinGW-w64 ships <poll.h> providing
+    # both, so force-include it before the VLC headers.
+    if(MINGW)
+        target_compile_options(gridtv_plugin PRIVATE -include poll.h)
+    endif()
     # VLC core symbols (vlc_*, picture_*) resolve at runtime from VLC itself.
     if(APPLE)
         target_link_options(gridtv_plugin PRIVATE
             "-Wl,-undefined,dynamic_lookup"
             "-Wl,-rpath,/opt/homebrew/opt/rtmidi/lib")
+    elseif(MINGW)
+        # Windows DLL: leave vlc_* undefined; VLC (libvlccore) resolves them at load.
+        target_link_options(gridtv_plugin PRIVATE "-Wl,--unresolved-symbols=ignore-all")
     elseif(UNIX)
         # Linux/BSD: shared object may leave VLC symbols undefined (resolved at load).
         target_link_options(gridtv_plugin PRIVATE "-Wl,--allow-shlib-undefined")
