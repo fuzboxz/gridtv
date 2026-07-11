@@ -239,8 +239,8 @@ jobs:
           # may exit non-zero even after printing the module list.
           out="$(VLC_PLUGIN_PATH="$DEST" "$VLC" --list 2>&1 || true)"
           printf '%s\n' "$out" | grep -i gridtv || {
-            echo "vlc --list did not contain gridtv; full vlc output:" >&2
-            printf '%s\n' "$out" | tail -20 >&2
+            echo "vlc --list did not contain gridtv; probing load errors (-vv):" >&2
+            VLC_PLUGIN_PATH="$DEST" "$VLC" --list -vv 2>&1 | grep -iE "gridtv|undefined symbol|failed to|error.*load|cannot open" | head -20 >&2
             exit 1
           }
 
