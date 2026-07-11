@@ -73,9 +73,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04          # pinned: ubuntu-latest could move to a new VLC
             plugin: libgridtv_plugin.so
-          - os: macos-latest
+          - os: macos-14              # pinned: Apple Silicon
             plugin: libgridtv_plugin.dylib
           - os: windows-latest
             plugin: libgridtv_plugin.dll
@@ -93,13 +93,26 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config \
             librtmidi-dev liblo-dev libvlc-dev libvlccore-dev
+          # Pin VLC: hold against upgrades, and assert the version + the t64
+          # module-ABI patch we depend on. Fails loud if the distro VLC drifts.
+          sudo apt-mark hold vlc libvlc-dev libvlccore-dev
+          case "$(pkg-config --modversion libvlc)" in
+            3.0.*) ;; *) echo "VLC drifted from pinned 3.0.x: $(pkg-config --modversion libvlc)"; exit 1 ;;
+          esac
+          grep -q 'MODULE_SYMBOL 3_0_0ft64' /usr/include/vlc/plugins/vlc_plugin.h \
+            || { echo "expected ubuntu t64 module-ABI patch missing"; exit 1; }
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install cmake ninja pkg-config rtmidi liblo
-          # VLC.app provides the libvlc headers + lib for the harness.
+          # VLC.app provides the libvlc headers + lib for the harness. Homebrew
+          # verifies the cask's sha256; assert major.minor so a future VLC 4.x
+          # fails loud (3.0.x shares one module ABI on unpatched macOS/Windows).
           brew install --cask vlc || true
+          case "$(/Applications/VLC.app/Contents/MacOS/VLC --version 2>&1 | head -1 | cut -d' ' -f3)" in
+            3.0.*) ;; *) echo "macOS VLC drifted from pinned 3.0.x"; exit 1 ;;
+          esac
 
       - name: Install dependencies (Windows, via vcpkg)
         if: runner.os == 'Windows'
@@ -115,6 +128,14 @@ jobs:
           # .so). The win64 package is runtime-only (no sdk/ import libs), so
           # generate MinGW import libs from its libvlccore.dll / libvlc.dll.
           curl -fL -o /tmp/vlc.7z https://download.videolan.org/pub/videolan/vlc/3.0.23/win64/vlc-3.0.23-win64.7z
+          # Verify the pinned VLC binary (matches videolan's published .sha256).
+          if command -v sha256sum >/dev/null 2>&1; then
+            ACT="$(sha256sum /tmp/vlc.7z | cut -d' ' -f1)"
+          else
+            ACT="$(shasum -a 256 /tmp/vlc.7z | cut -d' ' -f1)"
+          fi
+          [ "$ACT" = "eb4fd8a28291da73608c733786a09610fea865fbe94113bcb60b91c1ebb8404a" ] \
+            || { echo "VLC win64.7z sha256 mismatch: $ACT"; exit 1; }
           7z x /tmp/vlc.7z -o/tmp/vlcsdk -y >/dev/null
           LIBCC_DLL="$(find /tmp/vlcsdk -name libvlccore.dll | head -1)"
           test -n "$LIBCC_DLL" || { echo "ERROR: libvlccore.dll not in package"; ls /tmp/vlcsdk; exit 1; }
@@ -133,7 +154,8 @@ jobs:
       # (vlc_plugin.h, vlc_filter.h, …). They are vendored locally under
       # third_party/vlc-src but are NOT committed (gitignored), so CI fetches
       # just the include/ tree from the 3.0.23 tag with a sparse checkout.
-      - name: Fetch VLC module headers (matching the installed VLC)
+      - name: Fetch VLC module headers (pinned 3.0.23; Linux uses system headers)
+        if: runner.os != 'Linux'          # Linux builds against /usr/include/vlc/plugins (libvlccore-dev)
         shell: bash
         run: |
           set -e
@@ -141,16 +163,9 @@ jobs:
             echo "vlc headers already present"
             exit 0
           fi
-          # Match the headers to the VLC on the runner: VLC 3.0.x bumped its
-          # module-ABI entry suffix mid-series (e.g. 3.0.20 vs 3.0.23), so a plugin
-          # built against the wrong headers won't load.
-          VLC_VER="$(pkg-config --modversion libvlc 2>/dev/null || true)"   # Linux (libvlc-dev)
-          if [ -z "$VLC_VER" ] && [ -x /Applications/VLC.app/Contents/MacOS/VLC ]; then
-            VLC_VER="$(/Applications/VLC.app/Contents/MacOS/VLC --version 2>&1 | head -n1 | cut -d' ' -f3)"   # macOS
-          fi
-          [ -n "$VLC_VER" ] || VLC_VER=3.0.23   # Windows / fallback
-          echo "Fetching VLC $VLC_VER headers"
-          git clone --depth 1 --branch "$VLC_VER" --filter=blob:none --sparse \
+          # Pinned to upstream 3.0.23. Only feeds macOS/Windows, where VLC is
+          # unpatched and the module ABI is 3_0_0f across all 3.0.x.
+          git clone --depth 1 --branch 3.0.23 --filter=blob:none --sparse \
             https://github.com/videolan/vlc.git third_party/vlc-src
           git -C third_party/vlc-src sparse-checkout set include
 
@@ -214,7 +229,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-14]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
