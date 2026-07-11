@@ -9,10 +9,12 @@
 # Artifacts (the plugin + the CLI tools) are uploaded per run. Pushing a `v*`
 # tag also attaches the built plugins to a GitHub Release.
 #
-# NOTE on Windows: this leg is marked experimental. MIDI/OSC deps come from
-# vcpkg, and the VLC plugin needs VLC's Windows import library (libvlccore.lib),
-# which the build does not yet wire up automatically. Steps that can't complete
-# on Windows use `continue-on-error` so they never block the Linux/macOS builds.
+# All three platforms (Linux, macOS, Windows) build the full VLC plugin + CLI
+# tools as REQUIRED checks — a break on any OS turns the run red. Windows
+# builds under MinGW: deps from vcpkg's x64-mingw-static triplet, a poll()
+# shim for VLC's headers, and VLC import libs generated (gendef+dlltool) from
+# the win64 package's libvlccore/libvlc DLLs. The optional libVLC harness is
+# built only on Linux (where libvlc-dev is reliably present).
 
 name: build
 
@@ -151,7 +153,6 @@ jobs:
       - name: Configure (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        continue-on-error: true   # experimental leg: never block Linux/macOS
         run: |
           : "${VCPKG_ROOT:=C:/vcpkg}"   # canonical vcpkg root on GitHub windows runners
           # MinGW toolchain throughout: Ninja picks MinGW g++, and we build the
@@ -169,18 +170,17 @@ jobs:
         run: |
           cmake --build build --config Release -j \
             --target gridtv_device_test gridtv_probe gridtv_midi_probe gridtv_monome_mock
-        continue-on-error: ${{ runner.os == 'Windows' }}
 
       - name: Build VLC plugin
         shell: bash
         run: cmake --build build --config Release -j --target gridtv_plugin
-        continue-on-error: ${{ runner.os == 'Windows' }}
 
       - name: Build libVLC harness
-        # Optional dev tool; only available where libvlc headers exist.
+        # Optional dev tool; libvlc headers are reliably present on Linux only
+        # (apt libvlc-dev), so build it there. macOS/Windows skip it.
+        if: runner.os == 'Linux'
         shell: bash
         run: cmake --build build --config Release -j --target gridtv_vlc
-        continue-on-error: true
 
       # ── artifacts ─────────────────────────────────────────────────────────
       - name: Upload artifacts
