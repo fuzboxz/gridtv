@@ -152,7 +152,7 @@ jobs:
           fi
           VLC_VER=""
           if [ -n "$VLC_BIN" ]; then
-            VLC_VER="$("$VLC_BIN" --version 2>/dev/null | head -n1 | cut -d' ' -f3)"
+            VLC_VER="$("$VLC_BIN" --version 2>&1 | head -n1 | cut -d' ' -f3)"
           fi
           [ -n "$VLC_VER" ] || VLC_VER=3.0.23
           echo "Fetching VLC $VLC_VER headers"
