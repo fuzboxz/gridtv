@@ -253,11 +253,18 @@ jobs:
             /tmp/probe "$SO" | tee /tmp/probe.out
             grep -q 'plugin dlopen: ok' /tmp/probe.out
             grep -q 'dlsym(vlc_entry__3_0_0f): FOUND' /tmp/probe.out
-            # End-to-end: reset+list in ONE process forces an in-memory rescan
-            # (the root-owned cache can't be rewritten by a non-root user).
-            vlc --reset-plugins-cache --list 2>/dev/null | grep -i gridtv \
-              && echo "vlc --list shows gridtv" \
-              || echo "NOTE: vlc --list didn't show gridtv (cache quirk on this runner; loadability is proven by the probe above)."
+            # Does VLC actually list it? Try the system dir (cache-dependent) AND
+            # VLC_PLUGIN_PATH (always scanned fresh) — the plugin loads cleanly
+            # now, so VLC_PLUGIN_PATH should surface it.
+            T="$(mktemp -d)"; cp "$SO" "$T"/
+            if VLC_PLUGIN_PATH="$T" vlc --list 2>/dev/null | grep -qi gridtv; then
+              echo "vlc --list (via VLC_PLUGIN_PATH) shows gridtv ✓"
+            elif vlc --reset-plugins-cache --list 2>/dev/null | grep -qi gridtv; then
+              echo "vlc --list (system dir, cache reset) shows gridtv ✓"
+            else
+              echo "NOTE: vlc --list didn't show gridtv either way on this runner (cache/scan quirk; loadability is proven by the probe above)."
+            fi
+            rm -rf "$T"
           fi
 
   # ── release: attach the built plugins to a GitHub Release on a v* tag ──────
