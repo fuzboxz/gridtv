@@ -44,6 +44,12 @@ public:
     void set_change_threshold(int t) { change_threshold_ = t < 0 ? 0 : t; }
     int change_threshold() const { return change_threshold_; }
 
+    // Drop the cached last frame so the next blit() always sends the full grid.
+    // Call after an external change (a setting tweak, a reconnect) that alters
+    // the rendered colours, so frame_changed() can't suppress the refresh by
+    // comparing against stale, pre-change colours.
+    void invalidate_last_frame() { last_frame_.clear(); }
+
 protected:
     // True if `px` differs from the cached last frame beyond the threshold (and
     // caches it). Drivers call this at the top of blit().
@@ -61,8 +67,6 @@ protected:
         }
         return false;
     }
-    // Drop the cached frame so the next blit() always sends (e.g. after clear()).
-    void invalidate_last_frame() { last_frame_.clear(); }
 
 private:
     std::vector<RGB8> last_frame_;

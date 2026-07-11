@@ -45,6 +45,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #ifndef N_
@@ -63,12 +64,10 @@ struct filter_sys_t {
     filter_t* self = nullptr;
 
     // Per-channel colour LUT (gamma/contrast/lift/grid-gain/posterize baked in).
-    // Built on the worker thread only when a param changes; the hot path is a
-    // table lookup, so pow() never runs per pixel.
+    // Rebuilt on the worker thread whenever any live setting changes; the hot
+    // path is a table lookup, so pow() never runs per pixel. Whether a setting
+    // changed is tracked by the worker's local `prev` snapshot (filter_worker).
     std::uint8_t lut[256] = {};
-    float lut_gamma = -1.0f, lut_contrast = -1.0f, lut_lift = -1.0f, lut_bright = -1.0f;
-    int lut_bits = -1;
-    bool lut_valid = false;
     bool debug = false;
 
     // The grid is driven by an independent worker thread so the on-screen
@@ -102,8 +101,26 @@ static void gridtv_connect_error_dialog(filter_t* f, GridDevice* dev, const char
     }
 }
 
+// Snapshot of every live-tunable setting, compared each worker iteration. When
+// it changes, the colour LUT is rebuilt and the device's last-frame cache is
+// dropped so the grid redraws cleanly under the new setting instead of keeping
+// stale, old-setting colours -- the cause of glitches when switching fit / pick
+// / tone modes mid-playback. Max FPS is intentionally excluded: it only paces.
+struct Settings {
+    int pick, aspect, color_order;
+    float gamma, contrast, saturation, lift, brightness;
+    int bits, delta;
+    bool operator!=(const Settings& o) const {
+        return std::tie(pick, aspect, color_order, gamma, contrast, saturation,
+                        lift, brightness, bits, delta)
+             != std::tie(o.pick, o.aspect, o.color_order, o.gamma, o.contrast,
+                         o.saturation, o.lift, o.brightness, o.bits, o.delta);
+    }
+};
+
 static void filter_worker(filter_sys_t* sys) {
     auto last = Clock::now() - std::chrono::seconds(1);
+    Settings prev{};   // zero-init: the first real frame always differs -> full redraw
     while (!sys->stop.load()) {
         // (Re)connect on THIS thread so a slow device probe (the monome's OSC
         // discovery can take ~2s) never stalls the VLC video path. Retry quietly
@@ -153,21 +170,8 @@ static void filter_worker(filter_sys_t* sys) {
         }
         last = Clock::now();
 
-        // pic is already an 8x8 RGB24 (downscaled on the VLC thread in Filter()).
-        const ChannelOrder order = (var_InheritInteger(sys->self, "gridtv-color") == 1)
-                                       ? ChannelOrder::BGR : ChannelOrder::RGB;
-        float bright = var_InheritFloat(sys->self, "gridtv-brightness");
-        if (bright < 0.0f) bright = 0.0f;
-        if (bright > 1.0f) bright = 1.0f;
-        // Per-channel delta below which a frame is treated as unchanged and not
-        // re-sent (kills flicker on static content). Live-tunable.
-        sys->dev->set_change_threshold(var_InheritInteger(sys->self, "gridtv-delta"));
-
-        // Colour pipeline (all live-tunable). The per-channel chain
-        //   video-gamma -> contrast -> lift -> grid brightness -> posterize
-        // is baked into a 256-entry LUT rebuilt only when a param changes, so the
-        // hot path is a byte->byte lookup (pow never runs per pixel). Saturation
-        // couples channels, so it is applied to the input first.
+        // --- snapshot every live-tunable setting, clamped to its valid range ---
+        // pic is already a cols x rows RGB24, downscaled on the VLC thread.
         float gamma = var_InheritFloat(sys->self, "gridtv-gamma");
         if (gamma < 0.2f) gamma = 0.2f; else if (gamma > 3.0f) gamma = 3.0f;
         float contrast = var_InheritFloat(sys->self, "gridtv-contrast");
@@ -177,17 +181,37 @@ static void filter_worker(filter_sys_t* sys) {
         float lift = var_InheritFloat(sys->self, "gridtv-lift");
         if (lift < 0.0f) lift = 0.0f;
         if (lift > 1.0f) lift = 1.0f;
-        const float gain = 1.0f - lift;
+        float bright = var_InheritFloat(sys->self, "gridtv-brightness");
+        if (bright < 0.0f) bright = 0.0f;
+        if (bright > 1.0f) bright = 1.0f;
         int bits = var_InheritInteger(sys->self, "gridtv-bits");
         if (bits < 1) bits = 1; else if (bits > 8) bits = 8;
-        const float levels = static_cast<float>((1 << bits) - 1);
+        const int delta   = var_InheritInteger(sys->self, "gridtv-delta");
+        const int order_i = var_InheritInteger(sys->self, "gridtv-color");
+        // gridtv-colorpick / gridtv-aspect drive the downscale on the VLC thread
+        // (Filter), but we re-read them here so a change in EITHER (or in any
+        // colour/tone knob) is detected and forces a clean redraw.
+        const int pick_i   = var_InheritInteger(sys->self, "gridtv-colorpick");
+        const int aspect_i = var_InheritInteger(sys->self, "gridtv-aspect");
+        sys->dev->set_change_threshold(delta);
 
-        if (!sys->lut_valid || gamma != sys->lut_gamma || contrast != sys->lut_contrast ||
-            lift != sys->lut_lift || bright != sys->lut_bright || bits != sys->lut_bits) {
+        Settings cur{pick_i, aspect_i, order_i,
+                     gamma, contrast, saturation, lift, bright, bits, delta};
+        if (cur != prev) {
+            prev = cur;
+            // A live setting changed. Rebuild the per-channel LUT (bakes in
+            //   gamma -> contrast -> lift -> grid brightness -> posterize)
+            // AND drop the device's last-frame cache. The cache holds colours
+            // computed under the OLD setting, so without this the first frame
+            // under the new setting can fall within the change threshold and be
+            // suppressed by frame_changed() -> a half-updated, glitchy grid.
+            sys->dev->invalidate_last_frame();
             const float inv_gamma = 1.0f / gamma;
             const float inv255 = 1.0f / 255.0f;
+            const float gain = 1.0f - lift;
+            const float levels = static_cast<float>((1 << bits) - 1);
             for (int i = 0; i < 256; ++i) {
-                float v = std::pow(static_cast<float>(i) * inv255, inv_gamma);  // video brightness
+                float v = std::pow(static_cast<float>(i) * inv255, inv_gamma);  // video gamma
                 v = (v - 0.5f) * contrast + 0.5f;                              // contrast
                 v = lift + gain * v;                                          // black lift
                 v *= bright;                                                 // grid brightness
@@ -195,9 +219,8 @@ static void filter_worker(filter_sys_t* sys) {
                 v = std::rint(v * levels) / levels;                          // posterize
                 sys->lut[i] = static_cast<std::uint8_t>(v * 255.0f + 0.5f);
             }
-            sys->lut_gamma = gamma; sys->lut_contrast = contrast; sys->lut_lift = lift;
-            sys->lut_bright = bright; sys->lut_bits = bits; sys->lut_valid = true;
         }
+        const ChannelOrder order = (order_i == 1) ? ChannelOrder::BGR : ChannelOrder::RGB;
         const bool desaturate = saturation != 1.0f;
         auto proc = [&](std::uint8_t R, std::uint8_t G, std::uint8_t B) -> RGB8 {
             if (!desaturate)
