@@ -79,16 +79,17 @@ cmake -S . -B build -G Ninja ^
       -DVCPKG_TARGET_TRIPLET=x64-mingw-static ^
       -DVCPKG_OVERLAY_TRIPLETS=<vcpkg>/triplets/community ^
       -DVLC_APP="C:/Program Files/VideoLAN/VLC"
-cmake --build build -j          # -> build/gridtv_device_test.exe, ... (the CLI tools)
+cmake --build build -j          # -> build/libgridtv_plugin.dll + gridtv_*.exe
 ```
 
-> **Windows status.** The **core library and all CLI tools build** on Windows
-> (CI produces `gridtv_device_test.exe`, `gridtv_probe.exe`, …). The **VLC
-> plugin `.dll` does not yet build**: VLC's headers use POSIX `poll()`, which
-> MinGW doesn't declare, and a Windows plugin also needs VLC's import library
-> (`libvlccore.lib`) from the VLC `sdk/`. Closing this needs the VLC Windows
-> SDK wired into the build (the roadmap item) — the MinGW path gets everything
-> *except* the plugin.
+> **Windows build notes.** Everything builds under MinGW: the core library,
+ the four CLI tools, and the VLC plugin `libgridtv_plugin.dll`. Three MinGW
+ specifics make the plugin work: (1) a tiny `module_vlc/win_poll_shim.h`
+ force-included to declare `poll()`/`struct pollfd` (VLC's headers use them);
+ (2) the plugin links VLC's import libraries, which CI **generates from
+ `libvlccore.dll`/`libvlc.dll`** with `gendef`+`dlltool` (the win64 package is
+ runtime-only — no `sdk/`); (3) the deps come from vcpkg's `x64-mingw-static`
+ community triplet to match the MinGW ABI.
 
 ### VLC module headers
 
@@ -237,7 +238,7 @@ source change (push to `main`/`master`, or a PR).
 |---|---|---|
 | **Linux** | core lib + CLI tools + harness + VLC plugin | `libgridtv_plugin.so` |
 | **macOS** | core lib + CLI tools + harness + VLC plugin | `libgridtv_plugin.dylib` |
-| **Windows** | core lib + CLI tools _(plugin not yet)_ | CLI tool `.exe`s (plugin blocked on VLC `poll`/SDK) |
+| **Windows** | core lib + CLI tools + VLC plugin (MinGW) | `libgridtv_plugin.dll` + `.exe` tools |
 
 Each run uploads its artifacts (Actions → run → Artifacts). A **`v*` tag**
 publishes them to a GitHub **Release** with auto-generated notes. The VLC module
@@ -267,7 +268,7 @@ scripts/check-ci.sh     # needs actionlint (brew install actionlint) + python3
 - [ ] APC40 mkII, Ableton Push, monome 256 drivers
 - [ ] Multi-device fan-out; universal auto-detect (Launchpad + monome)
 - [ ] Correct batched-SysEx hot path; palette LUT + Floyd–Steinberg
-- [ ] Wire the Windows VLC import library so the `.dll` builds in CI
+- [x] Wire the Windows VLC plugin build (MinGW + gendef/dlltool import libs)
 
 ## Contributing
 
