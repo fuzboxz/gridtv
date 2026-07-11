@@ -247,8 +247,13 @@ jobs:
             out="$(vlc --list 2>&1 || true)"
           fi
           printf '%s\n' "$out" | grep -i gridtv || {
-            echo "gridtv not in vlc --list; tail of output:" >&2
-            printf '%s\n' "$out" | tail -8 >&2
+            SO="$(find plugin -name 'libgridtv_plugin.so' | head -n1)"
+            echo "=== entry symbols exported by our .so ===" >&2
+            nm -D "$SO" 2>/dev/null | grep -iE 'vlc_entry' >&2 || echo "  (nm found none / nm unavailable)" >&2
+            echo "=== first undefined symbols our .so needs ===" >&2
+            nm -D "$SO" 2>/dev/null | grep '^ *U ' | head -15 >&2
+            echo "=== VLC -vv on our module ===" >&2
+            vlc --list -vv 2>&1 | grep -iE 'gridtv|libgridtv|undefined|entry point' | head -10 >&2
             exit 1
           }
 
