@@ -106,10 +106,14 @@ jobs:
           vcpkg install rtmidi liblo --triplet x64-mingw-static \
             --overlay-triplets="$VCPKG_ROOT/triplets/community"
           # A Windows VLC DLL must bind its imports at link time (unlike an ELF
-          # .so). Pull VLC's MinGW import libs from the win64 sdk/.
-          curl -L -o /tmp/vlc.7z https://download.videolan.org/pub/videolan/vlc/3.0.23/win64/vlc-3.0.23-win64.7z
-          7z x /tmp/vlc.7z -o/tmp/vlcsdk -y libvlccore.dll.a libvlc.dll.a >/dev/null
-          echo "VLC_SDK_LIB=$(dirname "$(find /tmp/vlcsdk -name libvlccore.dll.a | head -1)")" >> "$GITHUB_ENV"
+          # .so). Pull VLC's MinGW import libs from the win64 sdk/ (extract the
+          # archive, then locate libvlccore.dll.a anywhere under it).
+          curl -fL -o /tmp/vlc.7z https://download.videolan.org/pub/videolan/vlc/3.0.23/win64/vlc-3.0.23-win64.7z
+          7z x /tmp/vlc.7z -o/tmp/vlcsdk -y >/dev/null
+          LIBCC="$(find /tmp/vlcsdk -name libvlccore.dll.a | head -1)"
+          test -n "$LIBCC" || { echo "ERROR: libvlccore.dll.a not found in SDK"; ls /tmp/vlcsdk; exit 1; }
+          echo "VLC_SDK_LIB=$(dirname "$LIBCC")" >> "$GITHUB_ENV"
+          echo "VLC import lib dir: $(dirname "$LIBCC")"
 
       # ── VLC module headers (required by the plugin) ───────────────────────
       # The plugin compiles against VLC's internal module headers
