@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Play a media file in VLC with the GridTV filter on: video on screen + grid,
+# audio synced. Works on macOS, Linux and Windows (Git Bash / MSYS / Cygwin).
+#
+# Configure the device/port in VLC -> Preferences -> Video -> Filters -> GridTV,
+# or pass --gridtv-* flags. Requires the plugin installed in VLC's plugins dir
+# (run scripts/install-plugin.sh on macOS; see README.md for Linux/Windows).
+#
+#   scripts/gridtv-vlc video.mp4
+#   scripts/gridtv-vlc video.mp4 --gridtv-device monome-128 --gridtv-brightness 0.6
+set -euo pipefail
+
+# Pick the VLC binary for this OS. Override with VLC_BIN if you need something custom.
+if [ -z "${VLC_BIN:-}" ]; then
+    case "$(uname -s)" in
+        Darwin*)
+            VLC_BIN="${VLC_APP:-/Applications/VLC.app}/Contents/MacOS/VLC" ;;
+        Linux*)
+            VLC_BIN="${VLC:-vlc}" ;;
+        MINGW*|MSYS*|CYGWIN*)
+            VLC_BIN="${VLC_APP:-/c/Program Files/VideoLAN/VLC}/vlc.exe" ;;
+        *)
+            echo "gridtv-vlc: unknown OS '$(uname -s)'." >&2
+            echo "  Set VLC_BIN=/path/to/vlc, or run:" >&2
+            echo "    vlc --video-filter gridtv \"\$@\"" >&2
+            exit 1 ;;
+    esac
+fi
+
+exec "$VLC_BIN" --video-filter gridtv "$@"

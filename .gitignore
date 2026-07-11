@@ -1,0 +1,17 @@
+build/
+cmake-build*/
+compile_commands.json
+# Vendored VLC source/headers are fetched on demand (CI clones just include/);
+# never commit them — they're large and platform-independent.
+third_party/
+*.o
+*.obj
+*.dylib
+*.a
+.DS_Store
+.cache/
+.idea/
+.vscode/
+
+# pi-subagents agent scratch (review transcripts etc.)
+.pi-subagents/
