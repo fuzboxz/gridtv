@@ -1,40 +1,36 @@
 #!/usr/bin/env sh
 # GridTV VLC plugin installer — macOS + Linux.
 #
-# Sets up everything the plugin needs to load in VLC:
-#   1. installs the runtime deps (rtmidi for Launchpad MIDI, liblo for monome OSC)
-#   2. copies the plugin into a folder you own
-#   3. points VLC at it with the VLC_PLUGIN_PATH environment variable
-#
-# No admin rights needed for the plugin itself, no modifying the signed VLC.app /
-# VLC install, no broken code signature, survives VLC updates. (Verified: VLC
-# scans VLC_PLUGIN_PATH and loads libgridtv_plugin from there, cold cache.)
+# Installs the plugin (and its runtime deps rtmidi+liblo) so VLC finds it, using
+# each OS's most reliable mechanism:
+#   • macOS -> ~/Library/Application Support/gridtv + VLC_PLUGIN_PATH
+#              (no modifying the signed VLC.app, no App Management, no sudo)
+#   • Linux -> VLC's system plugin folder (auto-scanned, seamless; needs sudo)
+#              VLC_PLUGIN_PATH turned out to be unreliable on Linux VLC builds.
 #
 # Usage:
 #   ./install.sh                       # auto-finds the plugin beside this script
 #   ./install.sh path/to/plugin.so     # explicit plugin file
 set -eu
 
-# --- 1. runtime deps (best-effort; non-fatal if it can't) --------------------
+# --- 1. runtime deps (rtmidi for Launchpad MIDI, liblo for monome OSC) -------
 install_deps() {
     case "$(uname -s)" in
         Darwin)
-            command -v brew >/dev/null || { echo "gridtv: Homebrew not found — install rtmidi + liblo yourself." >&2; return 0; }
-            brew install rtmidi liblo >/dev/null && echo "gridtv: deps ready (brew rtmidi liblo)"
+            command -v brew >/dev/null && brew install rtmidi liblo >/dev/null \
+                && echo "gridtv: deps ready (brew rtmidi liblo)"
             ;;
         Linux)
             if command -v apt-get >/dev/null; then
                 sudo apt-get update -qq && sudo apt-get install -y librtmidi-dev liblo-dev >/dev/null \
                     && echo "gridtv: deps ready (apt librtmidi-dev liblo-dev)"
-            else
-                echo "gridtv: install rtmidi + liblo via your distro's package manager." >&2
             fi
             ;;
     esac
 }
 install_deps || echo "gridtv: could not install deps automatically — install rtmidi + liblo if the plugin won't load."
 
-# --- 2. locate + copy the plugin --------------------------------------------
+# --- 2. locate the plugin ----------------------------------------------------
 find_plugin() {
     for c in "$1" \
              "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/libgridtv_plugin.dylib" \
@@ -52,36 +48,50 @@ PLUGIN="$(find_plugin "${1:-}")" || {
     exit 1
 }
 
+# --- 3. install per OS -------------------------------------------------------
 OS="$(uname -s)"
 case "$OS" in
-    Darwin) DEST="$HOME/Library/Application Support/gridtv" ;;
-    Linux)  DEST="$HOME/.local/share/gridtv" ;;
-    *) echo "gridtv: '$OS' unsupported (on Windows, use install/windows.ps1)." >&2; exit 1 ;;
-esac
+    Darwin)
+        DEST="$HOME/Library/Application Support/gridtv"
+        mkdir -p "$DEST"
+        cp -f "$PLUGIN" "$DEST/"
+        # GUI-launched VLC.app picks this up for the current session:
+        launchctl setenv VLC_PLUGIN_PATH "$DEST" 2>/dev/null || true
+        echo "gridtv: installed -> $DEST/$(basename "$PLUGIN")"
+        cat <<EOF
 
-mkdir -p "$DEST"
-cp -f "$PLUGIN" "$DEST/"
-echo "gridtv: installed -> $DEST/$(basename "$PLUGIN")"
-echo "gridtv: VLC_PLUGIN_PATH=$DEST"
-
-# Make a GUI-launched VLC.app pick it up for the current session on macOS.
-if [ "$OS" = "Darwin" ]; then
-    launchctl setenv VLC_PLUGIN_PATH "$DEST" 2>/dev/null || true
-fi
-
-cat <<EOF
-
-Done. Verify (open a NEW terminal first):
+Done. Verify (open a NEW terminal):
     vlc --list | grep -i gridtv
 
-To make it permanent, add this line to your shell profile (~/.zprofile on
-macOS, ~/.bashrc on Linux) so future sessions inherit it:
+Make it permanent — add to ~/.zprofile so future sessions inherit it:
     export VLC_PLUGIN_PATH="$DEST"
 
 Then enable GridTV in VLC -> Settings (Show All) -> Video -> Filters -> GridTV.
-
-Linux note: if you launch VLC from the desktop the env var may not reach it; in
-that case copy straight into VLC's system folder instead:
-    sudo cp "$DEST"/libgridtv_plugin.so "\$(pkg-config --variable=plugindir vlc 2>/dev/null || echo /usr/lib/vlc/plugins)/video_filter/"
-    vlc --reset-plugins-cache
 EOF
+        ;;
+    Linux)
+        # Find VLC's system plugin dir (try pkg-config, then common locations).
+        VLP=""
+        for d in "$(pkg-config --variable=plugindir vlc-plugin 2>/dev/null)" \
+                 /usr/lib/vlc/plugins \
+                 /usr/lib/x86_64-linux-gnu/vlc/plugins; do
+            [ -n "$d" ] && [ -d "$d" ] && { VLP="$d"; break; }
+        done
+        [ -n "$VLP" ] || { echo "gridtv: can't find VLC's plugins directory." >&2; exit 1; }
+        sudo mkdir -p "$VLP/video_filter"
+        sudo cp -f "$PLUGIN" "$VLP/video_filter/"
+        echo "gridtv: installed -> $VLP/video_filter/$(basename "$PLUGIN") (system-wide)"
+        cat <<EOF
+
+Done. Verify (VLC auto-detects the new file; if not, refresh once):
+    vlc --reset-plugins-cache
+    vlc --list | grep -i gridtv
+
+Then enable GridTV in VLC -> Settings (Show All) -> Video -> Filters -> GridTV.
+EOF
+        ;;
+    *)
+        echo "gridtv: '$OS' unsupported (on Windows, use install/windows.ps1)." >&2
+        exit 1
+        ;;
+esac

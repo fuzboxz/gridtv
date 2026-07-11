@@ -220,27 +220,26 @@ jobs:
         with:
           name: gridtv-${{ matrix.os }}
           path: plugin
-      - name: Install via install.sh (isolated HOME) + verify VLC loads gridtv
+      - name: Install via install.sh + verify VLC loads gridtv
         shell: bash
         run: |
           set -e
-          fakehome="$(mktemp -d)"            # don't touch the runner's real profile
-          export HOME="$fakehome"
-          if [ "$(uname -s)" = "Darwin" ]; then ext=dylib; VLC=/Applications/VLC.app/Contents/MacOS/VLC; \
-          else ext=so; VLC=vlc; fi
-          PLUGIN="$(find plugin -name "libgridtv_plugin.$ext" | head -n 1)"
-          test -n "$PLUGIN"
-          sh install/install.sh "$PLUGIN"            # installs rtmidi+liblo deps + the plugin + VLC_PLUGIN_PATH
-          if [ -d "$HOME/Library/Application Support/gridtv" ]; then \
-            DEST="$HOME/Library/Application Support/gridtv"; else DEST="$HOME/.local/share/gridtv"; fi
-          test -f "$DEST/libgridtv_plugin.$ext"
-          # The key assertion: VLC discovers the plugin purely via VLC_PLUGIN_PATH.
-          # Capture vlc's output and ignore its exit code — headless VLC on Linux
-          # may exit non-zero even after printing the module list.
-          out="$(VLC_PLUGIN_PATH="$DEST" "$VLC" --list 2>&1 || true)"
+          if [ "$(uname -s)" = "Darwin" ]; then
+            # macOS: install into an isolated HOME (user folder + VLC_PLUGIN_PATH)
+            fakehome="$(mktemp -d)"; export HOME="$fakehome"
+            sh install/install.sh "$(find plugin -name 'libgridtv_plugin.dylib' | head -n1)"
+            DEST="$HOME/Library/Application Support/gridtv"
+            test -f "$DEST/libgridtv_plugin.dylib"
+            out="$(VLC_PLUGIN_PATH="$DEST" /Applications/VLC.app/Contents/MacOS/VLC --list 2>&1 || true)"
+          else
+            # Linux: install.sh copies into VLC's system folder (sudo, seamless)
+            sh install/install.sh "$(find plugin -name 'libgridtv_plugin.so' | head -n1)"
+            vlc --reset-plugins-cache >/dev/null 2>&1 || true
+            out="$(vlc --list 2>&1 || true)"
+          fi
           printf '%s\n' "$out" | grep -i gridtv || {
-            echo "vlc --list did not contain gridtv; probing load errors (-vv):" >&2
-            VLC_PLUGIN_PATH="$DEST" "$VLC" --list -vv 2>&1 | grep -iE "gridtv|undefined symbol|failed to|error.*load|cannot open" | head -20 >&2
+            echo "gridtv not in vlc --list; tail of output:" >&2
+            printf '%s\n' "$out" | tail -8 >&2
             exit 1
           }
 
