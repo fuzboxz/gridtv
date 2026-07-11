@@ -97,7 +97,14 @@ jobs:
 
       - name: Install dependencies (Windows, via vcpkg)
         if: runner.os == 'Windows'
-        run: vcpkg install rtmidi liblo
+        shell: bash
+        run: |
+          : "${VCPKG_ROOT:=C:/vcpkg}"
+          # Build the deps with MinGW to match the runner's compiler: under bash,
+          # CMake/Ninja picks MinGW g++, whose ABI clashes with vcpkg's default
+          # MSVC (x64-windows) libs. x64-mingw-static is a vcpkg community triplet.
+          vcpkg install rtmidi liblo --triplet x64-mingw-static \
+            --overlay-triplets="$VCPKG_ROOT/triplets/community"
 
       # ── VLC module headers (required by the plugin) ───────────────────────
       # The plugin compiles against VLC's internal module headers
@@ -127,11 +134,12 @@ jobs:
         continue-on-error: true   # experimental leg: never block Linux/macOS
         run: |
           : "${VCPKG_ROOT:=C:/vcpkg}"   # canonical vcpkg root on GitHub windows runners
-          # Use the Visual Studio generator (NOT Ninja): the runner's default
-          # compiler under bash is MinGW, whose ABI clashes with vcpkg's MSVC
-          # x64-windows libs. The VS generator drives MSVC, matching vcpkg.
-          cmake -S . -B build -G "Visual Studio 17 2022" \
+          # MinGW toolchain throughout: Ninja picks MinGW g++, and we build the
+          # vcpkg deps with the matching x64-mingw-static triplet (ABI-consistent).
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-mingw-static \
+            -DVCPKG_OVERLAY_TRIPLETS="$VCPKG_ROOT/triplets/community" \
             -DVLC_APP="C:/Program Files/VideoLAN/VLC"
 
       # ── build (core lib + CLI tools build everywhere) ─────────────────────
