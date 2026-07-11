@@ -249,7 +249,7 @@ exist in `CMakeLists.txt`, and every `uses:` action must be pinned to a tag/SHA
 scripts/check-ci.sh     # needs actionlint (brew install actionlint) + python3
 ```
 
-> **Badge:** the README build badge uses `OWNER` as a placeholder — replace it
+> **Badge:** the README build badge reflects the live `fuzboxz/gridtv` CI status.
 > with your GitHub user/org once the repo is pushed.
 
 ---

@@ -1,6 +1,6 @@
 # gridtv — lo-fi video on grid controllers
 
-[![build](https://github.com/OWNER/gridtv/actions/workflows/build.yml/badge.svg)](https://github.com/OWNER/gridtv/actions/workflows/build.yml)
+[![build](https://github.com/fuzboxz/gridtv/actions/workflows/build.yml/badge.svg)](https://github.com/fuzboxz/gridtv/actions/workflows/build.yml)
 
 **GridTV shows your video on a music grid controller** — a Novation Launchpad or
 a monome grid — as a low-resolution light display, **at the same time** as normal
