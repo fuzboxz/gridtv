@@ -1,17 +1,40 @@
 #!/usr/bin/env sh
 # GridTV VLC plugin installer — macOS + Linux.
 #
-# Copies the downloaded plugin into a folder you own and points VLC at it with
-# the VLC_PLUGIN_PATH environment variable. This needs no admin rights, does NOT
-# modify the signed VLC.app / VLC install, does NOT break VLC's code signature,
-# and survives VLC updates. (Verified: VLC scans VLC_PLUGIN_PATH and loads
-# libgridtv_plugin from there, even with a cold plugin cache.)
+# Sets up everything the plugin needs to load in VLC:
+#   1. installs the runtime deps (rtmidi for Launchpad MIDI, liblo for monome OSC)
+#   2. copies the plugin into a folder you own
+#   3. points VLC at it with the VLC_PLUGIN_PATH environment variable
+#
+# No admin rights needed for the plugin itself, no modifying the signed VLC.app /
+# VLC install, no broken code signature, survives VLC updates. (Verified: VLC
+# scans VLC_PLUGIN_PATH and loads libgridtv_plugin from there, cold cache.)
 #
 # Usage:
 #   ./install.sh                       # auto-finds the plugin beside this script
 #   ./install.sh path/to/plugin.so     # explicit plugin file
 set -eu
 
+# --- 1. runtime deps (best-effort; non-fatal if it can't) --------------------
+install_deps() {
+    case "$(uname -s)" in
+        Darwin)
+            command -v brew >/dev/null || { echo "gridtv: Homebrew not found — install rtmidi + liblo yourself." >&2; return 0; }
+            brew install rtmidi liblo >/dev/null && echo "gridtv: deps ready (brew rtmidi liblo)"
+            ;;
+        Linux)
+            if command -v apt-get >/dev/null; then
+                sudo apt-get update -qq && sudo apt-get install -y librtmidi-dev liblo-dev >/dev/null \
+                    && echo "gridtv: deps ready (apt librtmidi-dev liblo-dev)"
+            else
+                echo "gridtv: install rtmidi + liblo via your distro's package manager." >&2
+            fi
+            ;;
+    esac
+}
+install_deps || echo "gridtv: could not install deps automatically — install rtmidi + liblo if the plugin won't load."
+
+# --- 2. locate + copy the plugin --------------------------------------------
 find_plugin() {
     for c in "$1" \
              "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/libgridtv_plugin.dylib" \
@@ -42,7 +65,6 @@ echo "gridtv: installed -> $DEST/$(basename "$PLUGIN")"
 echo "gridtv: VLC_PLUGIN_PATH=$DEST"
 
 # Make a GUI-launched VLC.app pick it up for the current session on macOS.
-# (Not persistent across reboots — see the profile note below.)
 if [ "$OS" = "Darwin" ]; then
     launchctl setenv VLC_PLUGIN_PATH "$DEST" 2>/dev/null || true
 fi

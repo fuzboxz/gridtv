@@ -224,14 +224,16 @@ jobs:
         shell: bash
         run: |
           set -e
-          export HOME="$(mktemp -d)"          # don't touch the runner's real profile
-          ext="$(uname -s | grep -q Darwin && echo dylib || echo so)"
-          PLUGIN="$(find plugin -name "libgridtv_plugin.$ext" | head -1)"
+          fakehome="$(mktemp -d)"            # don't touch the runner's real profile
+          export HOME="$fakehome"
+          if [ "$(uname -s)" = "Darwin" ]; then ext=dylib; VLC=/Applications/VLC.app/Contents/MacOS/VLC; \
+          else ext=so; VLC=vlc; fi
+          PLUGIN="$(find plugin -name "libgridtv_plugin.$ext" | head -n 1)"
           test -n "$PLUGIN"
-          sh install/install.sh "$PLUGIN"
-          DEST="$HOME/Library/Application Support/gridtv"; [ -d "$DEST" ] || DEST="$HOME/.local/share/gridtv"
+          sh install/install.sh "$PLUGIN"            # installs rtmidi+liblo deps + the plugin + VLC_PLUGIN_PATH
+          if [ -d "$HOME/Library/Application Support/gridtv" ]; then \
+            DEST="$HOME/Library/Application Support/gridtv"; else DEST="$HOME/.local/share/gridtv"; fi
           test -f "$DEST/libgridtv_plugin.$ext"
-          VLC="$(uname -s | grep -q Darwin && echo /Applications/VLC.app/Contents/MacOS/VLC || echo vlc)"
           # The key assertion: VLC discovers the plugin purely via VLC_PLUGIN_PATH.
           VLC_PLUGIN_PATH="$DEST" "$VLC" --list 2>/dev/null | grep -i gridtv
 
