@@ -234,12 +234,12 @@ jobs:
           else
             # Linux: install.sh copies into VLC's system folder (sudo, seamless)
             sh install/install.sh "$(find plugin -name 'libgridtv_plugin.so' | head -n1)"
-            vlc --reset-plugins-cache >/dev/null 2>&1 || true
+            sudo rm -f /usr/lib/x86_64-linux-gnu/vlc/plugins/plugins.dat /usr/lib/vlc/plugins/plugins.dat 2>/dev/null || true
             out="$(vlc --list 2>&1 || true)"
           fi
           printf '%s\n' "$out" | grep -i gridtv || {
-            echo "gridtv not in vlc --list; tail of output:" >&2
-            printf '%s\n' "$out" | tail -8 >&2
+            echo "=== VLC version ===" >&2; vlc --version 2>&1 | head -1 >&2
+            echo "=== VLC verbose mentions of gridtv ===" >&2; vlc --list -vv 2>&1 | grep -i gridtv | head -10 >&2
             exit 1
           }
 
