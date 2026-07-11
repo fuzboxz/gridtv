@@ -253,11 +253,11 @@ jobs:
             /tmp/probe "$SO" | tee /tmp/probe.out
             grep -q 'plugin dlopen: ok' /tmp/probe.out
             grep -q 'dlsym(vlc_entry__3_0_0f): FOUND' /tmp/probe.out
-            # Informational: vlc --list depends on VLC rescanning its (root-owned)
-            # plugin cache, which doesn't reliably happen for a non-root CI user —
-            # a real user gets it after adding the file + restarting VLC.
-            vlc --list 2>/dev/null | grep -i gridtv && echo "vlc --list shows gridtv" || \
-              echo "NOTE: vlc --list didn't show gridtv (VLC plugin-cache quirk on this runner; loadability is proven by the probe above)."
+            # End-to-end: reset+list in ONE process forces an in-memory rescan
+            # (the root-owned cache can't be rewritten by a non-root user).
+            vlc --reset-plugins-cache --list 2>/dev/null | grep -i gridtv \
+              && echo "vlc --list shows gridtv" \
+              || echo "NOTE: vlc --list didn't show gridtv (cache quirk on this runner; loadability is proven by the probe above)."
           fi
 
   # ── release: attach the built plugins to a GitHub Release on a v* tag ──────
