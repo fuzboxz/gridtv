@@ -38,6 +38,9 @@ add_library(gridtv STATIC
     src/devices/monome_128.cpp
 )
 target_include_directories(gridtv PUBLIC include)
+# libgridtv is linked into the shared VLC plugin, so it must be position-
+# independent. macOS is lenient about this; Linux x86-64 requires -fPIC.
+set_target_properties(gridtv PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(gridtv
     PUBLIC
         PkgConfig::RTMIDI
