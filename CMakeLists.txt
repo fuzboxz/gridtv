@@ -14,14 +14,54 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 # ----------------------------------------------------------------------------
 # Dependencies
 # ----------------------------------------------------------------------------
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(RTMIDI REQUIRED IMPORTED_TARGET rtmidi)
-pkg_check_modules(LIBLO REQUIRED IMPORTED_TARGET liblo)
+# RtMidi + liblo: prefer pkg-config (Homebrew on macOS, apt on Linux), which
+# also injects RtMidi's backend define (__MACOSX_CORE__/__LINUX_ALSA__). When
+# pkg-config is absent (e.g. a vcpkg-only Windows build) fall back to locating
+# the raw libs + headers and set the backend define per platform ourselves.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(RTMIDI IMPORTED_TARGET rtmidi)
+    pkg_check_modules(LIBLO  IMPORTED_TARGET liblo)
+endif()
+
+if(TARGET PkgConfig::RTMIDI)
+    set(GRIDTV_RTMIDI_LIB PkgConfig::RTMIDI)
+    set(GRIDTV_LIBLO_LIB   PkgConfig::LIBLO)
+else()
+    # pkg-config absent (e.g. a vcpkg-only Windows build): locate the raw libs +
+    # headers and supply RtMidi's backend define + the backend's system libs
+    # ourselves (static libs don't carry transitive deps the way a .pc would).
+    if(WIN32)
+        set(_rtmidi_backend __WINDOWS_MM__)
+        set(_rtmidi_syslib winmm)
+        set(_liblo_syslib  ws2_32)   # liblo OSC over UDP needs winsock
+    elseif(APPLE)
+        set(_rtmidi_backend __MACOSX_CORE__)
+    else()
+        set(_rtmidi_backend __LINUX_ALSA__)
+    endif()
+
+    find_library(RTMIDI_LIB NAMES rtmidi RtMidi REQUIRED)
+    find_path(RTMIDI_INC NAMES RtMidi.h PATH_SUFFIXES rtmidi REQUIRED)
+    add_library(gridtv_rtmidi INTERFACE IMPORTED)
+    set_target_properties(gridtv_rtmidi PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${RTMIDI_INC}"
+        INTERFACE_LINK_LIBRARIES      "${RTMIDI_LIB};${_rtmidi_syslib}"
+        INTERFACE_COMPILE_DEFINITIONS "${_rtmidi_backend}")
+
+    find_library(LIBLO_LIB NAMES lo liblo REQUIRED)
+    find_path(LIBLO_INC NAMES lo.h PATH_SUFFIXES lo REQUIRED)
+    add_library(gridtv_liblo INTERFACE IMPORTED)
+    set_target_properties(gridtv_liblo PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${LIBLO_INC}"
+        INTERFACE_LINK_LIBRARIES      "${LIBLO_LIB};${_liblo_syslib}")
+
+    set(GRIDTV_RTMIDI_LIB gridtv_rtmidi)
+    set(GRIDTV_LIBLO_LIB   gridtv_liblo)
+endif()
 
 # CoreMIDI/CoreFoundation are macOS-only. RtMidi links them transitively on
-# macOS and selects the native backend on every OS (Core on macOS, ALSA on
-# Linux, WinMM on Windows) via the __MACOSX_CORE__/__LINUX_ALSA__/__WINDOWS_MM__
-# macros that pkg-config injects. We only link the Apple frameworks explicitly.
+# macOS; we only link them explicitly on Apple.
 if(APPLE)
     find_library(COREMIDI CoreMIDI)
     find_library(COREFOUNDATION CoreFoundation)
@@ -43,8 +83,8 @@ target_include_directories(gridtv PUBLIC include)
 set_target_properties(gridtv PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(gridtv
     PUBLIC
-        PkgConfig::RTMIDI
-        PkgConfig::LIBLO
+        ${GRIDTV_RTMIDI_LIB}
+        ${GRIDTV_LIBLO_LIB}
 )
 if(APPLE)
     target_link_libraries(gridtv PUBLIC ${COREMIDI} ${COREFOUNDATION})

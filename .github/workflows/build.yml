@@ -98,7 +98,7 @@ jobs:
       - name: Install dependencies (Windows, via vcpkg)
         if: runner.os == 'Windows'
         run: |
-          choco install ninja pkg-config --limit-output --no-progress
+          choco install ninja --limit-output --no-progress
           vcpkg install rtmidi liblo
 
       # ── VLC module headers (required by the plugin) ───────────────────────
@@ -129,8 +129,6 @@ jobs:
         continue-on-error: true   # experimental leg: never block Linux/macOS
         run: |
           : "${VCPKG_ROOT:=C:/vcpkg}"   # canonical vcpkg root on GitHub windows runners
-          # rtmidi & liblo ship .pc files (vcpkg_fixup_pkgconfig) — point pkg-config at them
-          export PKG_CONFIG_PATH="$VCPKG_ROOT/installed/x64-windows/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
             -DVLC_APP="C:/Program Files/VideoLAN/VLC"
