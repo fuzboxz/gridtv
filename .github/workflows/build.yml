@@ -251,7 +251,9 @@ jobs:
             # exactly where it fails (dlopen unresolved-symbol vs dlsym entry).
             gcc test/probe_dlopen.c -o /tmp/probe -ldl
             /tmp/probe "$SO" >&2 || true
-            vlc --reset-plugins-cache >/dev/null 2>&1 || true   # rescan so the new .so is picked up
+            # Force VLC to rescan: drop the stale (root-owned) plugin cache.
+            sudo rm -f /usr/lib/x86_64-linux-gnu/vlc/plugins/plugins.dat /usr/lib/vlc/plugins/plugins.dat 2>/dev/null || true
+            rm -rf "${HOME}"/.cache/vlc 2>/dev/null || true
             out="$(vlc --list 2>&1 || true)"
             printf '%s\n' "$out" | grep -i gridtv || { echo "ubuntu VLC did not list gridtv" >&2; exit 1; }
           fi
