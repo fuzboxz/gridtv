@@ -133,7 +133,7 @@ jobs:
       # (vlc_plugin.h, vlc_filter.h, …). They are vendored locally under
       # third_party/vlc-src but are NOT committed (gitignored), so CI fetches
       # just the include/ tree from the 3.0.23 tag with a sparse checkout.
-      - name: Fetch VLC module headers
+      - name: Fetch VLC module headers (matching the installed VLC)
         shell: bash
         run: |
           set -e
@@ -141,7 +141,22 @@ jobs:
             echo "vlc headers already present"
             exit 0
           fi
-          git clone --depth 1 --branch 3.0.23 --filter=blob:none --sparse \
+          # Match the headers to the VLC installed on the runner, so the plugin's
+          # module-ABI entry symbol matches what this VLC will load. VLC 3.0.x
+          # bumped the ABI suffix mid-series (e.g. 3.0.20 vs 3.0.23), so a plugin
+          # built against the wrong headers won't load.
+          VLC_BIN=""
+          if command -v vlc >/dev/null 2>&1; then VLC_BIN=vlc; fi
+          if [ -z "$VLC_BIN" ] && [ -x /Applications/VLC.app/Contents/MacOS/VLC ]; then
+            VLC_BIN=/Applications/VLC.app/Contents/MacOS/VLC
+          fi
+          VLC_VER=""
+          if [ -n "$VLC_BIN" ]; then
+            VLC_VER="$('$VLC_BIN' --version 2>/dev/null | head -n1 | awk '{print $3}')"
+          fi
+          [ -n "$VLC_VER" ] || VLC_VER=3.0.23
+          echo "Fetching VLC $VLC_VER headers"
+          git clone --depth 1 --branch "$VLC_VER" --filter=blob:none --sparse \
             https://github.com/videolan/vlc.git third_party/vlc-src
           git -C third_party/vlc-src sparse-checkout set include
 
@@ -238,8 +253,8 @@ jobs:
             out="$(vlc --list 2>&1 || true)"
           fi
           printf '%s\n' "$out" | grep -i gridtv || {
-            echo "=== VLC version ===" >&2; vlc --version 2>&1 | head -1 >&2
-            echo "=== VLC verbose mentions of gridtv ===" >&2; vlc --list -vv 2>&1 | grep -i gridtv | head -10 >&2
+            echo "gridtv not in vlc --list; tail of output:" >&2
+            printf '%s\n' "$out" | tail -8 >&2
             exit 1
           }
 
