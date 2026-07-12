@@ -29,6 +29,12 @@ public:
     // Callers should drop frames faster than this rather than flooding the transport.
     virtual int max_fps() const = 0;
 
+    // Distinct brightness levels per channel the device can show (e.g. Launchpad
+    // RGB 0..63 -> 64). >255 (the default) means "effectively continuous or it
+    // dithers itself" -> the plugin skips its own dither step. Used to scale the
+    // optional ordered dither to the device's real quantization step.
+    virtual int dither_levels() const { return 256; }
+
     // Open the underlying transport (MIDI / OSC). Throws std::runtime_error on failure.
     virtual void connect() = 0;
     virtual void disconnect() = 0;

@@ -39,6 +39,7 @@ public:
     int rows() const override { return 8; }
     ColorModel color_model() const override { return ColorModel::RGB; }
     int max_fps() const override { return 30; }
+    int dither_levels() const override { return rgb_max_ + 1; }  // 64 (Mini/MK2/Pro gen1) or 128 (X/Pro MK3)
 
     void connect() override;
     void disconnect() override;

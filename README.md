@@ -188,7 +188,9 @@ also be passed as `--gridtv-<name>` flags. Most update **live** while video play
 | **Device** | dropdown | `auto` | Which controller: `auto` (detect any Launchpad), a specific model, `monome grid 128`, `Launchpad classic`, or `custom` |
 | **Custom MIDI port** | text | — | Used only when Device = `custom`; a substring of the MIDI port name (see Tools → Messages) |
 | **Aspect / fit** | dropdown | `Fill` | `Fill` (crop to fill), `Fit` (letterbox / show all), `Stretch` (distort to fill) |
-| **Colour pick** | dropdown | `Dominant` | How each pad's colour is sampled: `Dominant` (crisp, default), `Average` (smooth), `Brightest`, `Median`, `Centre` |
+| **Colour pick** | dropdown | `Dominant` | How each pad's colour is sampled: `Dominant` (crisp, default), `Average` (true area-mean), `Vibrant` (saturation-weighted, punchy), `Brightest`, `Median`, `Centre` |
+| **Smoothing (temporal)** | dropdown | `Off` | Blends each frame with the previous to steady colours and kill shimmer: `Off` / `Light` / `Medium` / `Strong` (Strong can trail briefly on fast motion) |
+| **Dither** | dropdown | `Off` | Spreads the device's coarse levels into a stable checkerboard so gradients don't band: `Off` / `Ordered (Bayer)`. Mainly helps Launchpads (64/128 levels) |
 | **Video brightness (gamma)** | float 0.2–3 | `1.0` | Gamma on the source — above 1 brightens dark video / reveals shadow; below 1 darkens |
 | **Contrast** | float 0–3 | `1.0` | Punch (<1 softer, >1 punchier) |
 | **Saturation** | float 0–3 | `1.0` | Colour saturation (0 = greyscale; no effect on monochrome devices) |

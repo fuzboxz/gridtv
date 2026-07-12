@@ -70,6 +70,13 @@ struct filter_sys_t {
     std::uint8_t lut[256] = {};
     bool debug = false;
 
+    // Temporal-smoothing accumulator (worker thread only): the previous displayed
+    // grid, EMA-blended into the current one. Reset (history_valid=false) on any
+    // setting change so a mode switch snaps to the new look in one frame instead
+    // of blending with stale, old-setting colours.
+    std::vector<RGB8> history_;
+    bool history_valid = false;
+
     // The grid is driven by an independent worker thread so the on-screen
     // display path is never blocked by grid work: Filter() just downscales to a
     // tiny buffer and hands it off, returning the original picture immediately.
@@ -101,6 +108,18 @@ static void gridtv_connect_error_dialog(filter_t* f, GridDevice* dev, const char
     }
 }
 
+// Temporal smoothing: EMA blend of the current grid with the previous one.
+enum Smooth { SM_OFF = 0, SM_LIGHT = 1, SM_MEDIUM = 2, SM_STRONG = 3 };
+
+// Ordered dither applied just before the device blit (smooths banding from the
+// device's coarse levels / posterize). Off everywhere by default.
+enum Dither { DT_OFF = 0, DT_ORDERED = 1 };
+
+// 4x4 Bayer threshold matrix (values 0..15); spatially fixed -> flicker-free.
+static const int BAYER4[4][4] = {
+    { 0, 8, 2,10}, {12, 4,14, 6}, { 3,11, 1, 9}, {15, 7,13, 5}
+};
+
 // Snapshot of every live-tunable setting, compared each worker iteration. When
 // it changes, the colour LUT is rebuilt and the device's last-frame cache is
 // dropped so the grid redraws cleanly under the new setting instead of keeping
@@ -109,12 +128,13 @@ static void gridtv_connect_error_dialog(filter_t* f, GridDevice* dev, const char
 struct Settings {
     int pick, aspect, color_order;
     float gamma, contrast, saturation, lift, brightness, led_gamma;
-    int bits, delta;
+    int bits, delta, smoothing, dither;
     bool operator!=(const Settings& o) const {
         return std::tie(pick, aspect, color_order, gamma, contrast, saturation,
-                        lift, brightness, led_gamma, bits, delta)
+                        lift, brightness, led_gamma, bits, delta, smoothing, dither)
              != std::tie(o.pick, o.aspect, o.color_order, o.gamma, o.contrast,
-                         o.saturation, o.lift, o.brightness, o.led_gamma, o.bits, o.delta);
+                         o.saturation, o.lift, o.brightness, o.led_gamma, o.bits,
+                         o.delta, o.smoothing, o.dither);
     }
 };
 
@@ -198,10 +218,13 @@ static void filter_worker(filter_sys_t* sys) {
         // colour/tone knob) is detected and forces a clean redraw.
         const int pick_i   = var_InheritInteger(sys->self, "gridtv-colorpick");
         const int aspect_i = var_InheritInteger(sys->self, "gridtv-aspect");
+        const int smooth_i = var_InheritInteger(sys->self, "gridtv-smoothing");
+        const int dither_i = var_InheritInteger(sys->self, "gridtv-dither");
         sys->dev->set_change_threshold(delta);
 
         Settings cur{pick_i, aspect_i, order_i,
-                     gamma, contrast, saturation, lift, bright, led_gamma, bits, delta};
+                     gamma, contrast, saturation, lift, bright, led_gamma, bits, delta,
+                     smooth_i, dither_i};
         if (cur != prev) {
             prev = cur;
             // A live setting changed. Rebuild the per-channel LUT (bakes in
@@ -211,6 +234,7 @@ static void filter_worker(filter_sys_t* sys) {
             // under the new setting can fall within the change threshold and be
             // suppressed by frame_changed() -> a half-updated, glitchy grid.
             sys->dev->invalidate_last_frame();
+            sys->history_valid = false;   // snap temporal smoothing to the new look
             const float inv_gamma = 1.0f / gamma;
             const float inv255 = 1.0f / 255.0f;
             const float gain = 1.0f - lift;
@@ -252,6 +276,48 @@ static void filter_worker(filter_sys_t* sys) {
                 std::uint8_t g = px[1];
                 std::uint8_t b = (order == ChannelOrder::RGB) ? px[2] : px[0];
                 grid[static_cast<std::size_t>(y) * cols + x] = proc(r, g, b);
+            }
+        }
+
+        // --- temporal smoothing (EMA): blend with the previous grid to steady
+        //     the palette and suppress per-frame shimmer. Disabled modes, or the
+        //     first frame after any setting change (history_valid==false), pass
+        //     through unblended and re-seed the history. ---
+        if (smooth_i != SM_OFF && sys->history_valid &&
+            sys->history_.size() == grid.size()) {
+            const float a = (smooth_i == SM_LIGHT) ? 0.50f
+                          : (smooth_i == SM_MEDIUM) ? 0.30f : 0.15f;
+            auto mix = [&](std::uint8_t c, std::uint8_t o) -> std::uint8_t {
+                float f = a * c + (1.0f - a) * o;
+                return static_cast<std::uint8_t>(f < 0.0f ? 0.0f : f > 255.0f ? 255.0f : std::rint(f));
+            };
+            for (std::size_t i = 0; i < grid.size(); ++i) {
+                grid[i].r = mix(grid[i].r, sys->history_[i].r);
+                grid[i].g = mix(grid[i].g, sys->history_[i].g);
+                grid[i].b = mix(grid[i].b, sys->history_[i].b);
+            }
+        }
+        sys->history_.assign(grid.begin(), grid.end());  // smoothed colour = new history
+        sys->history_valid = true;
+
+        // --- ordered dither (last, so it isn't smoothed away): spread the
+        //     device's coarse levels / posterize into a stable Bayer pattern so
+        //     gradients read smooth instead of banded. Skipped for devices that
+        //     report >=256 levels (continuous, or they dither themselves). ---
+        if (dither_i != DT_OFF) {
+            const int dl = sys->dev->dither_levels();
+            if (dl > 1 && dl < 256) {
+                const float dstep = 255.0f / (dl - 1);
+                auto add = [](std::uint8_t v, float o) -> std::uint8_t {
+                    float f = v + o;
+                    return static_cast<std::uint8_t>(f < 0.0f ? 0.0f : f > 255.0f ? 255.0f : std::rint(f));
+                };
+                for (int y = 0; y < rows; ++y)
+                    for (int x = 0; x < cols; ++x) {
+                        const float off = (static_cast<float>(BAYER4[y & 3][x & 3]) / 15.0f - 0.5f) * dstep;
+                        RGB8& c = grid[static_cast<std::size_t>(y) * cols + x];
+                        c.r = add(c.r, off); c.g = add(c.g, off); c.b = add(c.b, off);
+                    }
             }
         }
         try {
@@ -375,7 +441,7 @@ static void Close(vlc_object_t* obj) {
 // How a pad's colour is derived from its source block. Average is the smooth
 // area-mean (also the fast image_Convert path); the others sample a cols*K x
 // rows*K intermediate so each pad collapses a K*K block of real pixels.
-enum ColorPick { CP_AVERAGE = 0, CP_DOMINANT = 1, CP_BRIGHTEST = 2, CP_MEDIAN = 3, CP_CENTER = 4 };
+enum ColorPick { CP_AVERAGE = 0, CP_DOMINANT = 1, CP_BRIGHTEST = 2, CP_MEDIAN = 3, CP_CENTER = 4, CP_VIBRANT = 5 };
 
 // How source content is fitted to the (non-1:1) device grid.
 enum Fit { FIT_STRETCH = 0, FIT_COVER = 1, FIT_CONTAIN = 2 };
@@ -423,6 +489,29 @@ static RGB8 pick_block(const std::uint8_t* base, int pitch, int bx, int by, int 
             }
         int best = 0;
         for (int b = 1; b < 512; ++b) if (cnt[b] > cnt[best]) best = b;
+        if (cnt[best] == 0) {
+            const std::uint8_t* p = base + static_cast<std::size_t>(by + K / 2) * pitch + (bx + K / 2) * 3;
+            return {p[0], p[1], p[2]};
+        }
+        return {static_cast<std::uint8_t>(sr[best] / cnt[best]),
+                static_cast<std::uint8_t>(sg[best] / cnt[best]),
+                static_cast<std::uint8_t>(sb[best] / cnt[best])};
+    }
+    case CP_VIBRANT: {  // dominant colour weighted by saturation (vivid wins over grey)
+        float wcnt[512] = {0};
+        int cnt[512] = {0}; long sr[512] = {0}, sg[512] = {0}, sb[512] = {0};
+        for (int y = 0; y < K; ++y)
+            for (int x = 0; x < K; ++x) {
+                const std::uint8_t* p = base + static_cast<std::size_t>(by + y) * pitch + (bx + x) * 3;
+                int bin = (p[0] >> 5) * 64 + (p[1] >> 5) * 8 + (p[2] >> 5);
+                int mx = std::max(p[0], std::max(p[1], p[2]));
+                int mn = std::min(p[0], std::min(p[1], p[2]));
+                float sat = mx > 0 ? static_cast<float>(mx - mn) / mx : 0.0f;
+                wcnt[bin] += 0.15f + sat;          // floor so grey still scores a little
+                cnt[bin]++; sr[bin] += p[0]; sg[bin] += p[1]; sb[bin] += p[2];
+            }
+        int best = 0;
+        for (int b = 1; b < 512; ++b) if (wcnt[b] > wcnt[best]) best = b;
         if (cnt[best] == 0) {
             const std::uint8_t* p = base + static_cast<std::size_t>(by + K / 2) * pitch + (bx + K / 2) * 3;
             return {p[0], p[1], p[2]};
@@ -559,6 +648,81 @@ static picture_t* downscale_custom(image_handler_t* image, picture_t* src,
     return small;
 }
 
+// Mean colour of the source RGB24 rectangle [x0,x1) x [y0,y1). Used by the
+// area-average downscaler: each pad = true mean of every pixel behind it, so the
+// grid preserves the frame's actual colour distribution rather than aliasing.
+static void area_mean(const std::uint8_t* base, int pitch, int x0, int y0, int x1, int y1,
+                      std::uint8_t* out3) {
+    if (x1 <= x0) x1 = x0 + 1;
+    if (y1 <= y0) y1 = y0 + 1;
+    long R = 0, G = 0, B = 0;
+    for (int y = y0; y < y1; ++y) {
+        const std::uint8_t* r = base + static_cast<std::size_t>(y) * pitch;
+        for (int x = x0; x < x1; ++x) { R += r[x * 3]; G += r[x * 3 + 1]; B += r[x * 3 + 2]; }
+    }
+    const long cnt = static_cast<long>(x1 - x0) * (y1 - y0);
+    out3[0] = static_cast<std::uint8_t>(R / cnt);
+    out3[1] = static_cast<std::uint8_t>(G / cnt);
+    out3[2] = static_cast<std::uint8_t>(B / cnt);
+}
+
+// Downscale by true area-averaging: convert to a capped-resolution RGB24 (so the
+// per-pad sum stays cheap), then each pad = mean of the source pixels mapped to
+// it under the aspect mode. Independent of VLC's scaler quality -> no aliasing,
+// so the grid keeps the frame's real colours instead of moire artefacts.
+static picture_t* downscale_area_average(image_handler_t* image, picture_t* src,
+                                         int cols, int rows, int fit) {
+    const int sw = src->format.i_visible_width  > 0 ? src->format.i_visible_width  : src->format.i_width;
+    const int sh = src->format.i_visible_height > 0 ? src->format.i_visible_height : src->format.i_height;
+    if (sw <= 0 || sh <= 0) return fit_to(image, src, cols, rows, fit);  // nothing to average
+    const int CAP = 256;  // bound the working-resolution convert + sum
+    double s = static_cast<double>(CAP) / std::max(sw, sh);
+    if (s > 1.0) s = 1.0;
+    const int cw = std::max(1, static_cast<int>(std::round(sw * s)));
+    const int ch = std::max(1, static_cast<int>(std::round(sh * s)));
+    picture_t* rgb = convert_rgb(image, src, cw, ch);  // averages when downscaling
+    if (!rgb) return fit_to(image, src, cols, rows, fit);
+    picture_t* out = new_rgb(cols, rows);
+    if (!out) { picture_Release(rgb); return nullptr; }
+    blacken(out);
+    const std::uint8_t* base = rgb->p[0].p_pixels;
+    const int rp = rgb->p[0].i_pitch;
+    const int dp = out->p[0].i_pitch;
+    std::uint8_t* db = out->p[0].p_pixels;
+
+    if (fit == FIT_CONTAIN) {  // letterbox: source fits inside the grid
+        const double sc = std::min(static_cast<double>(cols) / cw, static_cast<double>(rows) / ch);
+        const int iw = std::max(1, static_cast<int>(std::round(cw * sc)));
+        const int ih = std::max(1, static_cast<int>(std::round(ch * sc)));
+        const int gx0 = (cols - iw) / 2, gy0 = (rows - ih) / 2;
+        for (int gy = 0; gy < rows; ++gy)
+            for (int gx = 0; gx < cols; ++gx) {
+                std::uint8_t* d = db + static_cast<std::size_t>(gy) * dp + static_cast<std::size_t>(gx) * 3;
+                if (gx < gx0 || gx >= gx0 + iw || gy < gy0 || gy >= gy0 + ih) continue;  // black bar
+                area_mean(base, rp, (gx - gx0) * cw / iw, (gy - gy0) * ch / ih,
+                          ((gx - gx0) + 1) * cw / iw, ((gy - gy0) + 1) * ch / ih, d);
+            }
+    } else {
+        int rx, ry, rw, rh;
+        if (fit == FIT_COVER) {  // centre-crop the working image to the grid aspect
+            const double ga = static_cast<double>(cols) / rows;
+            if (static_cast<double>(cw) / ch > ga) { rh = ch; rw = static_cast<int>(std::round(ch * ga)); }
+            else { rw = cw; rh = static_cast<int>(std::round(cw / ga)); }
+            rx = (cw - rw) / 2; ry = (ch - rh) / 2;
+        } else {  // FIT_STRETCH
+            rx = 0; ry = 0; rw = cw; rh = ch;
+        }
+        for (int gy = 0; gy < rows; ++gy)
+            for (int gx = 0; gx < cols; ++gx) {
+                std::uint8_t* d = db + static_cast<std::size_t>(gy) * dp + static_cast<std::size_t>(gx) * 3;
+                area_mean(base, rp, rx + gx * rw / cols, ry + gy * rh / rows,
+                          rx + (gx + 1) * rw / cols, ry + (gy + 1) * rh / rows, d);
+            }
+    }
+    picture_Release(rgb);
+    return out;
+}
+
 // Display-path call: downscale to a tiny RGB24 on the VLC thread (image_Convert
 // is not safe off-thread), hand it to the worker for the MIDI blit, and return
 // the original picture immediately. The display path never blocks on MIDI.
@@ -569,7 +733,7 @@ static picture_t* Filter(filter_t* f, picture_t* p_pic) {
         const int mode = var_InheritInteger(f, "gridtv-colorpick");
         const int fit = var_InheritInteger(f, "gridtv-aspect");
         picture_t* small = (mode == CP_AVERAGE)
-            ? fit_to(sys->image, p_pic, cols, rows, fit)
+            ? downscale_area_average(sys->image, p_pic, cols, rows, fit)
             : downscale_custom(sys->image, p_pic, cols, rows, mode, fit);
         if (small) {
             std::lock_guard<std::mutex> lk(sys->mtx);
@@ -600,15 +764,27 @@ static const char* const gridtv_device_texts[] = {
 };
 
 // Colour-pick modes for the --gridtv-colorpick dropdown.
-static const int gridtv_colorpick_values[] = { 0, 1, 2, 3, 4 };
+static const int gridtv_colorpick_values[] = { 0, 1, 2, 3, 4, 5 };
 static const char* const gridtv_colorpick_texts[] = {
-    "Average (smooth)", "Dominant colour (crisp)", "Brightest pixel", "Median", "Centre pixel"
+    "Average (smooth)", "Dominant colour (crisp)", "Brightest pixel", "Median", "Centre pixel", "Vibrant (saturated, punchy)"
 };
 
 // Aspect/fit modes for the --gridtv-aspect dropdown.
 static const int gridtv_aspect_values[] = { 0, 1, 2 };
 static const char* const gridtv_aspect_texts[] = {
     "Stretch (distort to fill)", "Fill (crop to fill)", "Fit (letterbox / show all)"
+};
+
+// Temporal-smoothing presets for the --gridtv-smoothing dropdown.
+static const int gridtv_smoothing_values[] = { 0, 1, 2, 3 };
+static const char* const gridtv_smoothing_texts[] = {
+    "Off", "Light", "Medium", "Strong"
+};
+
+// Dither modes for the --gridtv-dither dropdown.
+static const int gridtv_dither_values[] = { 0, 1 };
+static const char* const gridtv_dither_texts[] = {
+    "Off", "Ordered (Bayer)"
 };
 
 // Colour-byte order for the --gridtv-color dropdown. Frames are RGB after VLC's
@@ -637,8 +813,8 @@ vlc_module_begin()
         "  3. Play any video. The grid lights up within a second or two.\n\n"
         "WHAT YOU CAN CHANGE LIVE\n"
         "  Brightness, gamma, LED display curve, contrast, saturation, lift, "
-        "bit depth, max FPS, colour-pick and fit all update instantly while the "
-        "video plays - no restart needed.\n\n"
+        "bit depth, smoothing, dither, max FPS, colour-pick and fit all update "
+        "instantly while the video plays - no restart needed.\n\n"
         "WHAT NEEDS A RE-OPEN\n"
         "  'Device' and 'Custom MIDI port' are read when a media item opens. "
         "To switch hardware, stop the current item, choose the new device, then "
@@ -695,6 +871,24 @@ vlc_module_begin()
                 "robust middle. Centre uses the single centre pixel (sharpest, "
                 "noisiest)."), false)
         change_integer_list(gridtv_colorpick_values, gridtv_colorpick_texts)
+        change_safe()
+    add_integer("gridtv-smoothing", SM_OFF,
+                N_("Smoothing (temporal)"), N_("Blends each grid frame with the "
+                "previous one to steady the colours and suppress per-frame "
+                "shimmer/flicker - a big readability win on noisy or fast video. "
+                "Off = every frame raw; Light/Medium/Strong = progressively more "
+                "smoothing (Strong can trail briefly on fast motion). Resets "
+                "instantly when you change any setting."), false)
+        change_integer_list(gridtv_smoothing_values, gridtv_smoothing_texts)
+        change_safe()
+    add_integer("gridtv-dither", DT_OFF,
+                N_("Dither"), N_("Spreads the device's coarse brightness steps "
+                "(and the Bit-depth posterize) into a fine, stable checkerboard "
+                "so gradients look smooth instead of banded. Ordered (Bayer) is "
+                "flicker-free. Mainly helps Launchpads (64/128 levels); no effect "
+                "on the monome (it already dithers) or where levels are effectively "
+                "continuous."), false)
+        change_integer_list(gridtv_dither_values, gridtv_dither_texts)
         change_safe()
 
     set_section(N_("Colour & tone"), N_("The look of the image on the grid."))
