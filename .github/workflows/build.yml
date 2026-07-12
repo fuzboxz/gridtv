@@ -101,18 +101,21 @@ jobs:
         run: |
           # warning/performance level = real issues (null/buffer/leak). Analyses
           # the WHOLE project including the plugin (the most safety-relevant
-          # file). False positives are listed (with rationale) in
-          # .cppcheck-suppressions: VLC's OWN headers trip cppcheck's parser
-          # (bogus memleak in vlc_arrays.h, syntaxError in vlc_mtime.h — not our
-          # code; the clang static analyzer parses VLC headers correctly), plus
-          # style FPs on our concrete device classes. returnDanglingLifetime in
-          # convert_rgb/new_rgb is suppressed INLINE at those sites: picture_New-
-          # FromFormat / image_Convert copy the video format BY VALUE into the
-          # new picture, so returning it is safe.
+          # file). False positives, all documented:
+          #  - .cppcheck-suppressions (wildcards): VLC's OWN headers trip cppcheck's
+          #    parser (bogus memleak in vlc_arrays.h, syntaxError in vlc_mtime.h —
+          #    not our code; the clang static analyzer parses VLC headers fine).
+          #  - virtualCallInConstructor / noExplicitConstructor: style FPs on our
+          #    concrete device classes (dtor->virtual resolves to the same class).
+          # returnDanglingLifetime in convert_rgb/new_rgb is suppressed INLINE at
+          # those sites: picture_NewFromFormat / image_Convert copy the video
+          # format BY VALUE into the new picture, so returning it is safe.
           cppcheck --project=build-audit/compile_commands.json \
             --enable=warning,performance \
             --suppressions-list=.cppcheck-suppressions \
             --suppress=missingIncludeSystem \
+            --suppress=virtualCallInConstructor \
+            --suppress=noExplicitConstructor \
             --inline-suppr --error-exitcode=1
 
       - name: clang-tidy — informational report (overlaps scan-build; not a gate)
