@@ -60,6 +60,97 @@ jobs:
       - name: Lint + validate workflow
         run: scripts/check-ci.sh
 
+  # ── audit: static + dynamic memory-safety analysis. Single OS (Linux): the
+  # analyzers are a one-line apt install, the VLC plugin builds against the
+  # distro headers, and the C++ is identical on every OS so analysing once is
+  # enough. Three hard gates (clang static analyzer, cppcheck, ASAN+UBSAN) plus
+  # one informational clang-tidy report. Not matrixed and not a release gate.
+  audit:
+    name: Memory-safety analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Install analyzers + build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang clang-tools clang-tidy cppcheck \
+            cmake ninja-build pkg-config \
+            librtmidi-dev liblo-dev libvlc-dev libvlccore-dev
+
+      - name: Configure under the static analyzer (clang; export compile_commands)
+        run: |
+          scan-build --use-cc clang --use-c++ clang++ \
+            cmake -S . -B build-audit -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: clang static analyzer (scan-build) — hard gate
+        run: |
+          # Path-sensitive analysis (null-deref, use-after-free, leak, ...).
+          # scan-build prints "No bugs found" when clean; fail otherwise.
+          scan-build --use-cc clang --use-c++ clang++ -o scan-build-report \
+            cmake --build build-audit --target gridtv_plugin gridtv_device_test > scan-build.log 2>&1
+          grep -qE "scan-build: No bugs found" scan-build.log \
+            || { echo "::error::clang static analyzer reported bugs (see analysis-reports artifact)"; cat scan-build.log; exit 1; }
+
+      - name: cppcheck (warning + performance) — hard gate
+        run: |
+          # warning level = real issues (null/buffer/leak); style is too noisy
+          # (dtor-virtual-call false positives on our concrete device classes).
+          cppcheck --project=build-audit/compile_commands.json \
+            --enable=warning,performance \
+            --suppress=missingIncludeSystem --suppress=syntaxError \
+            -i third_party --inline-suppr --force --error-exitcode=1
+
+      - name: clang-tidy — informational report (overlaps scan-build; not a gate)
+        run: |
+          printf '%s\n' \
+            module_vlc/gridtv_plugin.cpp \
+            src/frame_processor.cpp \
+            src/devices/launchpad_mini_mk3.cpp \
+            src/devices/launchpad_classic.cpp \
+            src/devices/monome_128.cpp \
+            harness/gridtv_vlc.cpp > tidy.files
+          # Deliberately NOT --warnings-as-errors: see .clang-tidy (report only).
+          xargs -a tidy.files clang-tidy -p build-audit > clang-tidy-report.txt 2>&1 || true
+          echo "clang-tidy: $(grep -c 'warning:' clang-tidy-report.txt 2>/dev/null || echo 0) warnings (informational)"
+
+      - name: Build library test under ASAN + UBSAN
+        run: |
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1" \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-asan --target gridtv_device_test -j
+
+      - name: Run under ASAN + UBSAN — hard gate (sanitizer output = fail)
+        env:
+          ASAN_OPTIONS: abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          # No Launchpad on CI, so device_test exits 1 on connect — that's
+          # expected. The GATE is whether a sanitizer fires, not the exit code.
+          ./build-asan/gridtv_device_test > asan.log 2>&1 || true
+          if grep -qE "AddressSanitizer|runtime error:|UndefinedBehaviorSanitizer" asan.log; then
+            echo "::error::ASAN/UBSAN reported an issue"; cat asan.log; exit 1
+          fi
+          echo "ASAN/UBSAN clean"
+
+      - name: Upload analysis reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: analysis-reports
+          path: |
+            scan-build-report/
+            clang-tidy-report.txt
+            asan.log
+            tidy.files
+
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

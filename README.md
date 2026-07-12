@@ -11,6 +11,8 @@ mirrors a downscaled copy of every frame.
 It runs inside **VLC media player** as a video filter: turn it on once and every
 video you play is mirrored to the grid. There is no separate app to run.
 
+![GridTV mirroring a video onto a Launchpad grid](docs/gridtv-demo.gif)
+
 > Building from source, the architecture, CI, and device protocols are covered in
 > **[DEVELOPING.md](DEVELOPING.md)**. This README is the end-user guide — you only
 > need it if you're *using* GridTV, not building it.
@@ -181,7 +183,9 @@ plays — no restart needed.
 All settings live in **VLC → Settings (Show All) → Video → Filters → GridTV**,
 grouped into **Device · Picture · Colour & tone · Output · Advanced**, and can
 also be passed as `--gridtv-<name>` flags. Most update **live** while video plays
-(only **Device** / **Custom MIDI port** need a stop-and-replay).
+(only **Device** / **Custom MIDI port** need a stop-and-replay). For a full
+explanation of every option (with recipes and tuning tips) see
+**[docs/SETTINGS.md](docs/SETTINGS.md)**.
 
 | Setting | Type | Default | What it does |
 |---|---|---|---|
