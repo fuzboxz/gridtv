@@ -58,6 +58,55 @@
 using namespace gridtv;
 using Clock = std::chrono::steady_clock;
 
+// Snapshot of every live-tunable setting. Filter() reads + clamps all of them
+// on the VLC thread and hands a copy to the worker, so the worker NEVER touches
+// VLC's variable system -- a non-VLC thread doing var_Inherit* during a config
+// save / filter reconfigure is unsafe and crashed VLC on "save while playing".
+// Compared each worker iteration; on change the LUT is rebuilt and the device's
+// last-frame cache + temporal history are dropped for a clean redraw.
+struct Settings {
+    int pick, aspect, color_order, fps;
+    float gamma, contrast, saturation, lift, brightness, led_gamma;
+    int bits, delta, smoothing, dither, sharpen;
+    bool operator!=(const Settings& o) const {
+        return std::tie(pick, aspect, color_order, fps, gamma, contrast, saturation,
+                        lift, brightness, led_gamma, bits, delta, smoothing, dither,
+                        sharpen)
+             != std::tie(o.pick, o.aspect, o.color_order, o.fps, o.gamma, o.contrast,
+                         o.saturation, o.lift, o.brightness, o.led_gamma, o.bits,
+                         o.delta, o.smoothing, o.dither, o.sharpen);
+    }
+};
+
+// Read + clamp every live setting into a snapshot (VLC thread only). Centralised
+// so the worker can stay free of VLC variable access entirely.
+static Settings snapshot_settings(filter_t* f) {
+    Settings s{};
+    s.pick = var_InheritInteger(f, "gridtv-colorpick");
+    s.aspect = var_InheritInteger(f, "gridtv-aspect");
+    s.color_order = var_InheritInteger(f, "gridtv-color");
+    s.fps = var_InheritInteger(f, "gridtv-fps");
+    s.gamma = var_InheritFloat(f, "gridtv-gamma");
+    if (s.gamma < 0.2f) s.gamma = 0.2f; else if (s.gamma > 3.0f) s.gamma = 3.0f;
+    s.contrast = var_InheritFloat(f, "gridtv-contrast");
+    if (s.contrast < 0.0f) s.contrast = 0.0f;
+    s.saturation = var_InheritFloat(f, "gridtv-saturation");
+    if (s.saturation < 0.0f) s.saturation = 0.0f;
+    s.lift = var_InheritFloat(f, "gridtv-lift");
+    if (s.lift < 0.0f) s.lift = 0.0f; else if (s.lift > 1.0f) s.lift = 1.0f;
+    s.brightness = var_InheritFloat(f, "gridtv-brightness");
+    if (s.brightness < 0.0f) s.brightness = 0.0f; else if (s.brightness > 1.0f) s.brightness = 1.0f;
+    s.led_gamma = var_InheritFloat(f, "gridtv-ledgamma");
+    if (s.led_gamma < 1.0f) s.led_gamma = 1.0f; else if (s.led_gamma > 3.0f) s.led_gamma = 3.0f;
+    s.bits = var_InheritInteger(f, "gridtv-bits");
+    if (s.bits < 1) s.bits = 1; else if (s.bits > 8) s.bits = 8;
+    s.delta = var_InheritInteger(f, "gridtv-delta");
+    s.smoothing = var_InheritInteger(f, "gridtv-smoothing");
+    s.dither = var_InheritInteger(f, "gridtv-dither");
+    s.sharpen = var_InheritInteger(f, "gridtv-sharpen");
+    return s;
+}
+
 struct filter_sys_t {
     GridDevice* dev = nullptr;
     image_handler_t* image = nullptr;
@@ -82,7 +131,8 @@ struct filter_sys_t {
     // tiny buffer and hands it off, returning the original picture immediately.
     std::mutex mtx;
     std::condition_variable cv;
-    picture_t* pending = nullptr;   // newest 8x8 RGB24 frame held for the worker
+    picture_t* pending = nullptr;        // newest cols x rows RGB24 frame held for the worker
+    Settings pending_snap;               // settings snapshot captured with `pending` (VLC thread)
     std::atomic<bool> stop{false};
     std::atomic<bool> connected{false};     // set by the worker once the device is live
     std::atomic<bool> fail_announced{false};
@@ -116,31 +166,12 @@ enum Smooth { SM_OFF = 0, SM_LIGHT = 1, SM_MEDIUM = 2, SM_STRONG = 3 };
 enum Dither { DT_OFF = 0, DT_ORDERED = 1 };
 
 // Local-contrast (unsharp) sharpening of the tiny grid: crisps pad-to-pad edges
-// that averaging softened. Off everywhere by default.
+// that averaging softened. Light by default.
 enum Sharpen { SH_OFF = 0, SH_LIGHT = 1, SH_STRONG = 2 };
 
 // 4x4 Bayer threshold matrix (values 0..15); spatially fixed -> flicker-free.
 static const int BAYER4[4][4] = {
     { 0, 8, 2,10}, {12, 4,14, 6}, { 3,11, 1, 9}, {15, 7,13, 5}
-};
-
-// Snapshot of every live-tunable setting, compared each worker iteration. When
-// it changes, the colour LUT is rebuilt and the device's last-frame cache is
-// dropped so the grid redraws cleanly under the new setting instead of keeping
-// stale, old-setting colours -- the cause of glitches when switching fit / pick
-// / tone modes mid-playback. Max FPS is intentionally excluded: it only paces.
-struct Settings {
-    int pick, aspect, color_order;
-    float gamma, contrast, saturation, lift, brightness, led_gamma;
-    int bits, delta, smoothing, dither, sharpen;
-    bool operator!=(const Settings& o) const {
-        return std::tie(pick, aspect, color_order, gamma, contrast, saturation,
-                        lift, brightness, led_gamma, bits, delta, smoothing, dither,
-                        sharpen)
-             != std::tie(o.pick, o.aspect, o.color_order, o.gamma, o.contrast,
-                         o.saturation, o.lift, o.brightness, o.led_gamma, o.bits,
-                         o.delta, o.smoothing, o.dither, o.sharpen);
-    }
 };
 
 static void filter_worker(filter_sys_t* sys) {
@@ -170,11 +201,13 @@ static void filter_worker(filter_sys_t* sys) {
         }
 
         picture_t* raw = nullptr;
+        Settings cur;
         {
             std::unique_lock<std::mutex> lk(sys->mtx);
             sys->cv.wait(lk, [sys] { return sys->stop.load() || sys->pending != nullptr; });
             if (sys->stop.load() && !sys->pending) break;
             raw = sys->pending;
+            cur = sys->pending_snap;   // immutable settings snapshot (captured on the VLC thread)
             sys->pending = nullptr;
         }
         if (!raw) continue;
@@ -182,10 +215,11 @@ static void filter_worker(filter_sys_t* sys) {
         std::unique_ptr<picture_t, void(*)(picture_t*)> pic(raw, &picture_Release);
 
         try {  // never let a per-frame exception terminate the worker (and VLC)
-        // Pace to the device's sustainable rate.
-        const int user_fps = var_InheritInteger(sys->self, "gridtv-fps");
-        const int cap = (user_fps > 0) ? std::min(user_fps, sys->dev->max_fps())
-                                       : sys->dev->max_fps();
+        // Pace to the device's sustainable rate. fps comes from the snapshot
+        // (read on the VLC thread) -- the worker never touches VLC variables,
+        // so a config save / filter reconfigure can't race with per-frame reads.
+        const int cap = (cur.fps > 0) ? std::min(cur.fps, sys->dev->max_fps())
+                                      : sys->dev->max_fps();
         if (cap > 0) {
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                                      Clock::now() - last).count();
@@ -195,52 +229,20 @@ static void filter_worker(filter_sys_t* sys) {
         }
         last = Clock::now();
 
-        // --- snapshot every live-tunable setting, clamped to its valid range ---
-        // pic is already a cols x rows RGB24, downscaled on the VLC thread.
-        float gamma = var_InheritFloat(sys->self, "gridtv-gamma");
-        if (gamma < 0.2f) gamma = 0.2f; else if (gamma > 3.0f) gamma = 3.0f;
-        float contrast = var_InheritFloat(sys->self, "gridtv-contrast");
-        if (contrast < 0.0f) contrast = 0.0f;
-        float saturation = var_InheritFloat(sys->self, "gridtv-saturation");
-        if (saturation < 0.0f) saturation = 0.0f;
-        float lift = var_InheritFloat(sys->self, "gridtv-lift");
-        if (lift < 0.0f) lift = 0.0f;
-        if (lift > 1.0f) lift = 1.0f;
-        float bright = var_InheritFloat(sys->self, "gridtv-brightness");
-        if (bright < 0.0f) bright = 0.0f;
-        if (bright > 1.0f) bright = 1.0f;
-        int bits = var_InheritInteger(sys->self, "gridtv-bits");
-        if (bits < 1) bits = 1; else if (bits > 8) bits = 8;
-        // LED display curve: controller LEDs are driven ~linearly while video is
-        // gamma-encoded, so raw values look flat/washed. pow(v, led_gamma) deepens
-        // mid-tones + shadows to match the screen (also lifts perceived colour).
-        float led_gamma = var_InheritFloat(sys->self, "gridtv-ledgamma");
-        if (led_gamma < 1.0f) led_gamma = 1.0f; else if (led_gamma > 3.0f) led_gamma = 3.0f;
-        const int delta   = var_InheritInteger(sys->self, "gridtv-delta");
-        const int order_i = var_InheritInteger(sys->self, "gridtv-color");
-        // gridtv-colorpick / gridtv-aspect drive the downscale on the VLC thread
-        // (Filter), but we re-read them here so a change in EITHER (or in any
-        // colour/tone knob) is detected and forces a clean redraw.
-        const int pick_i   = var_InheritInteger(sys->self, "gridtv-colorpick");
-        const int aspect_i = var_InheritInteger(sys->self, "gridtv-aspect");
-        const int smooth_i = var_InheritInteger(sys->self, "gridtv-smoothing");
-        const int dither_i = var_InheritInteger(sys->self, "gridtv-dither");
-        const int sharpen_i = var_InheritInteger(sys->self, "gridtv-sharpen");
-        sys->dev->set_change_threshold(delta);
-
-        Settings cur{pick_i, aspect_i, order_i,
-                     gamma, contrast, saturation, lift, bright, led_gamma, bits, delta,
-                     smooth_i, dither_i, sharpen_i};
         if (cur != prev) {
             prev = cur;
-            // A live setting changed. Rebuild the per-channel LUT (bakes in
-            //   gamma -> contrast -> lift -> grid brightness -> posterize)
-            // AND drop the device's last-frame cache. The cache holds colours
-            // computed under the OLD setting, so without this the first frame
-            // under the new setting can fall within the change threshold and be
-            // suppressed by frame_changed() -> a half-updated, glitchy grid.
+            // A live setting changed: rebuild the per-channel LUT and force a
+            // clean redraw. The device's last-frame cache holds colours from the
+            // OLD setting, so without invalidate_last_frame() the first new frame
+            // could fall within the change threshold and be suppressed by
+            // frame_changed() -> a half-updated, glitchy grid. History resets so
+            // temporal smoothing snaps to the new look in one frame.
+            sys->dev->set_change_threshold(cur.delta);
             sys->dev->invalidate_last_frame();
-            sys->history_valid = false;   // snap temporal smoothing to the new look
+            sys->history_valid = false;
+            const float gamma = cur.gamma, contrast = cur.contrast, lift = cur.lift,
+                        bright = cur.brightness, led_gamma = cur.led_gamma;
+            const int bits = cur.bits;
             const float inv_gamma = 1.0f / gamma;
             const float inv255 = 1.0f / 255.0f;
             const float gain = 1.0f - lift;
@@ -256,7 +258,8 @@ static void filter_worker(filter_sys_t* sys) {
                 sys->lut[i] = static_cast<std::uint8_t>(v * 255.0f + 0.5f);
             }
         }
-        const ChannelOrder order = (order_i == 1) ? ChannelOrder::BGR : ChannelOrder::RGB;
+        const float saturation = cur.saturation;
+        const ChannelOrder order = (cur.color_order == 1) ? ChannelOrder::BGR : ChannelOrder::RGB;
         const bool desaturate = saturation != 1.0f;
         auto proc = [&](std::uint8_t R, std::uint8_t G, std::uint8_t B) -> RGB8 {
             if (!desaturate)
@@ -289,10 +292,10 @@ static void filter_worker(filter_sys_t* sys) {
         //     the palette and suppress per-frame shimmer. Disabled modes, or the
         //     first frame after any setting change (history_valid==false), pass
         //     through unblended and re-seed the history. ---
-        if (smooth_i != SM_OFF && sys->history_valid &&
+        if (cur.smoothing != SM_OFF && sys->history_valid &&
             sys->history_.size() == grid.size()) {
-            const float a = (smooth_i == SM_LIGHT) ? 0.50f
-                          : (smooth_i == SM_MEDIUM) ? 0.30f : 0.15f;
+            const float a = (cur.smoothing == SM_LIGHT) ? 0.50f
+                          : (cur.smoothing == SM_MEDIUM) ? 0.30f : 0.15f;
             auto mix = [&](std::uint8_t c, std::uint8_t o) -> std::uint8_t {
                 float f = a * c + (1.0f - a) * o;
                 return static_cast<std::uint8_t>(f < 0.0f ? 0.0f : f > 255.0f ? 255.0f : std::rint(f));
@@ -309,8 +312,8 @@ static void filter_worker(filter_sys_t* sys) {
         // --- local-contrast (unsharp): crisp pad-to-pad edges that averaging
         //     softened. grid + k*(grid - 3x3 box blur). Runs after temporal (so
         //     the sharpening isn't smoothed away) and before dither. ---
-        if (sharpen_i != SH_OFF) {
-            const float k = (sharpen_i == SH_LIGHT) ? 0.5f : 1.0f;
+        if (cur.sharpen != SH_OFF) {
+            const float k = (cur.sharpen == SH_LIGHT) ? 0.5f : 1.0f;
             std::vector<RGB8> sharp(grid.size());
             auto us = [](int v, float bv, float kk) -> std::uint8_t {
                 float f = v + kk * (v - bv);
@@ -337,7 +340,7 @@ static void filter_worker(filter_sys_t* sys) {
         //     device's coarse levels / posterize into a stable Bayer pattern so
         //     gradients read smooth instead of banded. Skipped for devices that
         //     report >=256 levels (continuous, or they dither themselves). ---
-        if (dither_i != DT_OFF) {
+        if (cur.dither != DT_OFF) {
             const int dl = sys->dev->dither_levels();
             if (dl > 1 && dl < 256) {
                 const float dstep = 255.0f / (dl - 1);
@@ -358,7 +361,7 @@ static void filter_worker(filter_sys_t* sys) {
             if (sys->debug) {
                 const RGB8& o = grid[0];
                 msg_Info(sys->self, "gridtv: tapped %dx%d bright=%.2f grid0=(%d,%d,%d)",
-                         cols, rows, bright, o.r, o.g, o.b);
+                         cols, rows, cur.brightness, o.r, o.g, o.b);
             }
         } catch (const std::exception& e) {
             // Device vanished mid-stream: drop and reconnect next iteration.
@@ -785,8 +788,12 @@ static picture_t* Filter(filter_t* f, picture_t* p_pic) {
     auto* sys = (filter_sys_t*)f->p_sys;
     if (p_pic && sys && sys->image && sys->dev && sys->connected.load()) {
         const int cols = sys->dev->cols(), rows = sys->dev->rows();
-        const int mode = var_InheritInteger(f, "gridtv-colorpick");
-        const int fit = var_InheritInteger(f, "gridtv-aspect");
+        // Read + clamp EVERY live setting here (VLC thread) and hand the worker
+        // an immutable snapshot -- the worker never calls var_Inherit*, which is
+        // what could crash VLC when saving settings during playback.
+        Settings snap = snapshot_settings(f);
+        const int mode = snap.pick;
+        const int fit = snap.aspect;
         picture_t* small = (mode == CP_AVERAGE)
             ? downscale_area_average(sys->image, p_pic, cols, rows, fit)
             : downscale_custom(sys->image, p_pic, cols, rows, mode, fit);
@@ -794,6 +801,7 @@ static picture_t* Filter(filter_t* f, picture_t* p_pic) {
             std::lock_guard<std::mutex> lk(sys->mtx);
             if (sys->pending) picture_Release(sys->pending);  // drop stale frame
             sys->pending = small;
+            sys->pending_snap = snap;   // paired with the frame; consumed atomically by the worker
             sys->cv.notify_one();
         }
     }
@@ -924,11 +932,13 @@ vlc_module_begin()
                 "Launchpad, 16x8 monome, etc.)."), false)
         change_integer_list(gridtv_aspect_values, gridtv_aspect_texts)
         change_safe()
-    add_integer("gridtv-colorpick", CP_DOMINANT,
+    add_integer("gridtv-colorpick", CP_SALIENT,
                 N_("Colour pick"), N_("How each pad's colour is chosen from the "
-                "block of video behind it. Dominant (default) picks the most common "
-                "colour - crisp, and avoids the muddy 'average' look on busy scenes. "
-                "Average is smoother. Brightest emphasises highlights. Median is a "
+                "block of video behind it. Salient (default) weights the average "
+                "toward detail / subject pixels so the subject reads through instead "
+                "of being flattened by a pure mean. Dominant picks the most common "
+                "colour (crisp). Vibrant favours saturated colours. Average is a "
+                "smooth area-mean. Brightest emphasises highlights. Median is a "
                 "robust middle. Centre uses the single centre pixel (sharpest, "
                 "noisiest)."), false)
         change_integer_list(gridtv_colorpick_values, gridtv_colorpick_texts)
@@ -951,7 +961,7 @@ vlc_module_begin()
                 "continuous."), false)
         change_integer_list(gridtv_dither_values, gridtv_dither_texts)
         change_safe()
-    add_integer("gridtv-sharpen", SH_OFF,
+    add_integer("gridtv-sharpen", SH_LIGHT,
                 N_("Sharpen (local contrast)"), N_("A mild unsharp mask on the grid "
                 "that crisps pad-to-pad edges the downscale softened, so the image "
                 "reads a little sharper/more defined. Light is subtle; Strong is "
