@@ -1,0 +1,13 @@
+# cppcheck suppressions — see .github/workflows/build.yml `audit` job
+# (--suppressions-list). These are all FALSE POSITIVES, documented inline.
+#
+# VLC's OWN headers trip cppcheck's parser into bogus reports; they are not our
+# code (VLC is responsible for its own headers, and the clang static analyzer
+# parses them correctly). Wildcards match any path suffix.
+memleak:*vlc_arrays.h
+syntaxError:*vlc_mtime.h
+# Style FPs on our concrete device classes (LaunchpadMk3/Classic/Monome128 are
+# not further derived, so a virtual call from their dtor resolves to the same
+# class) and the single-arg ctor that takes an enum class (no implicit hazard).
+virtualCallInConstructor
+noExplicitConstructor
