@@ -43,17 +43,17 @@ then run the installer — it installs the plugin plus its runtime deps
 (rtmidi/liblo) into the right place for you:
 
 ```sh
-# macOS / Linux
-chmod +x install.sh && ./install.sh libgridtv_plugin.dylib   # or .so
+# macOS / Linux — pass the plugin file you downloaded (arm64 macOS shown):
+chmod +x install.sh && ./install.sh libgridtv_plugin.arm64.dylib
 # Windows (PowerShell)
 powershell -ExecutionPolicy Bypass -File windows.ps1 -Plugin libgridtv_plugin.dll
 ```
 
-| OS | Plugin | Installer | What it does |
+| OS | Plugin (pick your CPU) | Installer | What it does |
 |---|---|---|---|
-| **macOS** (Apple Silicon) | `libgridtv_plugin.dylib` | `install.sh` | deps via Homebrew → `~/Library/Application Support/gridtv/` + `VLC_PLUGIN_PATH` (no modifying the signed VLC.app) |
-| **Linux** | `libgridtv_plugin.so` | `install.sh` | deps via apt → VLC's system `plugins/video_filter/` (auto-scanned) |
-| **Windows** | `libgridtv_plugin.dll` | `windows.ps1` | `%LOCALAPPDATA%\gridtv\` + `VLC_PLUGIN_PATH` |
+| **macOS** | `libgridtv_plugin.arm64.dylib` (Apple Silicon) or `libgridtv_plugin.x86_64.dylib` (Intel) | `install.sh` | deps via Homebrew → `~/Library/Application Support/gridtv/` + `VLC_PLUGIN_PATH` (no modifying the signed VLC.app) |
+| **Linux** | `libgridtv_plugin.x86_64.so` or `libgridtv_plugin.aarch64.so` | `install.sh` | deps via apt → VLC's system `plugins/video_filter/` (auto-scanned) |
+| **Windows** | `libgridtv_plugin.dll` (x64) | `windows.ps1` | `%LOCALAPPDATA%\gridtv\` + `VLC_PLUGIN_PATH` |
 
 Then verify: `vlc --list | grep -i gridtv`, and enable GridTV in **VLC → Settings
 (Show All) → Video → Filters → GridTV**. (Manual alternative: VLC loads modules
@@ -62,8 +62,8 @@ run `vlc --reset-plugins-cache` if it doesn't pick up a hand-copied file.)
 
 ### macOS
 
-1. Download `libgridtv_plugin.dylib` (Apple Silicon / arm64 — on an Intel Mac,
-   [build from source](DEVELOPING.md)).
+1. Download the plugin for your Mac: `libgridtv_plugin.arm64.dylib` (Apple
+   Silicon) or `libgridtv_plugin.x86_64.dylib` (Intel).
 2. In **Finder**, right-click **VLC.app → Show Package Contents → Contents →
    MacOS → plugins**, and drag the file in. Authenticate when prompted.
 3. If the filter doesn't appear in VLC, refresh the cache once:
@@ -75,11 +75,12 @@ run `vlc --reset-plugins-cache` if it doesn't pick up a hand-copied file.)
 
 VLC loads plugins from its system folder (varies by distro — commonly
 `/usr/lib/vlc/plugins/video_filter/`, or `/usr/lib/x86_64-linux-gnu/vlc/plugins/video_filter/`
-on Debian/Ubuntu multiarch):
+on Debian/Ubuntu multiarch — `aarch64-linux-gnu` on ARM):
 
 ```sh
-sudo cp libgridtv_plugin.so /usr/lib/x86_64-linux-gnu/vlc/plugins/video_filter/ \
-  || sudo cp libgridtv_plugin.so /usr/lib/vlc/plugins/video_filter/
+# x86_64 host → libgridtv_plugin.x86_64.so  (aarch64 host → libgridtv_plugin.aarch64.so)
+sudo cp libgridtv_plugin.x86_64.so /usr/lib/x86_64-linux-gnu/vlc/plugins/video_filter/ \
+  || sudo cp libgridtv_plugin.x86_64.so /usr/lib/vlc/plugins/video_filter/
 vlc --reset-plugins-cache
 vlc --list | grep -i gridtv     # confirm it loaded
 ```

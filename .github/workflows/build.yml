@@ -176,12 +176,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04          # pinned: ubuntu-latest could move to a new VLC
+          # Linux: x86_64 + arm64 (aarch64). The repo is public, so GitHub's free
+          # ARM runners (ubuntu-24.04-arm) are available.
+          - os: ubuntu-24.04          # x86_64
             plugin: libgridtv_plugin.so
-          - os: macos-14              # pinned: Apple Silicon
+            release_name: libgridtv_plugin.x86_64.so
+          - os: ubuntu-24.04-arm      # aarch64
+            plugin: libgridtv_plugin.so
+            release_name: libgridtv_plugin.aarch64.so
+          # macOS: Apple Silicon (arm64) + Intel (x86_64).
+          - os: macos-14              # arm64 (Apple Silicon)
             plugin: libgridtv_plugin.dylib
-          - os: windows-latest
+            release_name: libgridtv_plugin.arm64.dylib
+          - os: macos-15-intel              # x86_64 (Intel)
+            plugin: libgridtv_plugin.dylib
+            release_name: libgridtv_plugin.x86_64.dylib
+          # Windows: x64 only. No VLC arm64 Windows build exists (blocked).
+          - os: windows-latest        # x64
             plugin: libgridtv_plugin.dll
+            release_name: libgridtv_plugin.dll
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -310,18 +323,17 @@ jobs:
         run: cmake --build build --config Release -j --target gridtv_vlc
 
       # ── artifacts ─────────────────────────────────────────────────────────
-      - name: Upload artifacts
+      - name: Stage plugin (canonical name) for artifacts
+        shell: bash
+        run: |
+          mkdir -p stage
+          cp "$(find build -name '${{ matrix.plugin }}' | head -n1)" stage/
+      - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: gridtv-${{ matrix.os }}
-          if-no-files-found: warn
-          path: |
-            build/**/*gridtv_plugin*
-            build/**/gridtv_vlc*
-            build/**/gridtv_device_test*
-            build/**/gridtv_probe*
-            build/**/gridtv_midi_probe*
-            build/**/gridtv_monome_mock*
+          if-no-files-found: error
+          path: stage/*
 
   # ── smoke: install the plugin from the build artifacts and confirm VLC loads it
   smoke:
@@ -332,7 +344,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-14]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
@@ -384,7 +396,21 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           path: artifacts
-          merge-multiple: true
+          # NOT merge-multiple: the macOS and Linux builds share a filename
+          # (libgridtv_plugin.dylib / .so) across arches, so each arch stays in
+          # its own subdir until renamed to its arch-suffixed release name below.
+
+      - name: Stage arch-named release assets
+        run: |
+          set -e
+          mkdir -p rel
+          cp artifacts/gridtv-ubuntu-24.04/libgridtv_plugin.so      rel/libgridtv_plugin.x86_64.so
+          cp artifacts/gridtv-ubuntu-24.04-arm/libgridtv_plugin.so   rel/libgridtv_plugin.aarch64.so
+          cp artifacts/gridtv-macos-14/libgridtv_plugin.dylib        rel/libgridtv_plugin.arm64.dylib
+          cp artifacts/gridtv-macos-15-intel/libgridtv_plugin.dylib        rel/libgridtv_plugin.x86_64.dylib
+          cp artifacts/gridtv-windows-latest/libgridtv_plugin.dll    rel/libgridtv_plugin.dll
+          echo "Arch-named release assets:"
+          ls -l rel/
 
       - name: Attach plugins + installers to the GitHub Release
         # Built-in gh CLI (no third-party action with write scope). Tag name
@@ -394,5 +420,5 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           gh release create "$TAG" --generate-notes \
-            artifacts/*gridtv_plugin* install/install.sh install/windows.ps1 2>/dev/null \
-            || gh release upload "$TAG" artifacts/*gridtv_plugin* install/install.sh install/windows.ps1 --clobber
+            rel/* install/install.sh install/windows.ps1 2>/dev/null \
+            || gh release upload "$TAG" rel/* install/install.sh install/windows.ps1 --clobber
