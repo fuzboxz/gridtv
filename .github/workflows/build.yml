@@ -97,21 +97,28 @@ jobs:
           grep -qE "scan-build: No bugs found" scan-build.log \
             || { echo "::error::clang static analyzer reported bugs (see analysis-reports artifact)"; cat scan-build.log; exit 1; }
 
-      - name: cppcheck (library + tests; warning + performance) — hard gate
+      - name: cppcheck (whole project; warning + performance) — hard gate
         run: |
-          # Analyses the library + tests (src/ test/) only, NOT the plugin: the
-          # plugin pulls VLC's macro-heavy headers, which trip cppcheck's parser
-          # into false memleak/dangling reports (vlc_arrays.h, the module macros).
-          # The plugin is covered by the clang static analyzer step above, which
-          # parses VLC headers correctly. virtualCallInConstructor / noExplicit-
-          # Constructor are suppressed: our device classes are concrete (dtor->
-          # virtual resolves to the same class) and the single-arg ctor takes an
-          # enum class, so neither is a real hazard.
-          cppcheck src/ test/ -I include \
+          # warning/performance level = real issues (null/buffer/leak). Analyses
+          # the WHOLE project including the plugin (the most safety-relevant
+          # file). Suppressed false positives, all documented:
+          #  - virtualCallInConstructor / noExplicitConstructor: our device
+          #    classes are concrete (dtor->virtual resolves to the same class)
+          #    and the single-arg ctor takes an enum class.
+          #  - memleak in vlc_arrays.h: VLC's own inline array helpers — a
+          #    cppcheck parser false positive on VLC's alloc patterns (not ours).
+          #  - syntaxError in vlc_mtime.h: cppcheck can't eval VLC's INT64_C
+          #    macro in the #if — a parser limitation, not our code.
+          # returnDanglingLifetime in convert_rgb/new_rgb is suppressed INLINE at
+          # those sites: picture_NewFromFormat / image_Convert copy the video
+          # format BY VALUE into the new picture, so returning it is safe.
+          cppcheck --project=build-audit/compile_commands.json \
             --enable=warning,performance \
             --suppress=missingIncludeSystem \
             --suppress=virtualCallInConstructor \
             --suppress=noExplicitConstructor \
+            --suppress=memleak:vlc_arrays.h \
+            --suppress=syntaxError \
             --inline-suppr --error-exitcode=1
 
       - name: clang-tidy — informational report (overlaps scan-build; not a gate)

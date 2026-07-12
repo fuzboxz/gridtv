@@ -600,6 +600,10 @@ static picture_t* new_rgb(int W, int H) {
     f.i_sar_num = f.i_sar_den = 1;
     picture_t* p = picture_NewFromFormat(&f);
     video_format_Clean(&f);
+    // picture_NewFromFormat copies `f` into p->format BY VALUE (VLC pictures own
+    // their video_format_t); the local is used only synchronously, so returning p
+    // is safe. cppcheck can't see through the opaque VLC call -> false positive.
+    // cppcheck-suppress returnDanglingLifetime
     return p;
 }
 static picture_t* convert_rgb(image_handler_t* image, picture_t* src, int W, int H) {
@@ -610,6 +614,9 @@ static picture_t* convert_rgb(image_handler_t* image, picture_t* src, int W, int
     f.i_sar_num = f.i_sar_den = 1;
     picture_t* p = image_Convert(image, src, &src->format, &f);
     video_format_Clean(&f);
+    // image_Convert builds a new picture whose format is a COPY of `f`; the local
+    // is used only synchronously, so returning p is safe (cppcheck false positive).
+    // cppcheck-suppress returnDanglingLifetime
     return p;
 }
 static void blacken(picture_t* p) {
