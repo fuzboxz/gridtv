@@ -115,6 +115,10 @@ enum Smooth { SM_OFF = 0, SM_LIGHT = 1, SM_MEDIUM = 2, SM_STRONG = 3 };
 // device's coarse levels / posterize). Off everywhere by default.
 enum Dither { DT_OFF = 0, DT_ORDERED = 1 };
 
+// Local-contrast (unsharp) sharpening of the tiny grid: crisps pad-to-pad edges
+// that averaging softened. Off everywhere by default.
+enum Sharpen { SH_OFF = 0, SH_LIGHT = 1, SH_STRONG = 2 };
+
 // 4x4 Bayer threshold matrix (values 0..15); spatially fixed -> flicker-free.
 static const int BAYER4[4][4] = {
     { 0, 8, 2,10}, {12, 4,14, 6}, { 3,11, 1, 9}, {15, 7,13, 5}
@@ -128,13 +132,14 @@ static const int BAYER4[4][4] = {
 struct Settings {
     int pick, aspect, color_order;
     float gamma, contrast, saturation, lift, brightness, led_gamma;
-    int bits, delta, smoothing, dither;
+    int bits, delta, smoothing, dither, sharpen;
     bool operator!=(const Settings& o) const {
         return std::tie(pick, aspect, color_order, gamma, contrast, saturation,
-                        lift, brightness, led_gamma, bits, delta, smoothing, dither)
+                        lift, brightness, led_gamma, bits, delta, smoothing, dither,
+                        sharpen)
              != std::tie(o.pick, o.aspect, o.color_order, o.gamma, o.contrast,
                          o.saturation, o.lift, o.brightness, o.led_gamma, o.bits,
-                         o.delta, o.smoothing, o.dither);
+                         o.delta, o.smoothing, o.dither, o.sharpen);
     }
 };
 
@@ -220,11 +225,12 @@ static void filter_worker(filter_sys_t* sys) {
         const int aspect_i = var_InheritInteger(sys->self, "gridtv-aspect");
         const int smooth_i = var_InheritInteger(sys->self, "gridtv-smoothing");
         const int dither_i = var_InheritInteger(sys->self, "gridtv-dither");
+        const int sharpen_i = var_InheritInteger(sys->self, "gridtv-sharpen");
         sys->dev->set_change_threshold(delta);
 
         Settings cur{pick_i, aspect_i, order_i,
                      gamma, contrast, saturation, lift, bright, led_gamma, bits, delta,
-                     smooth_i, dither_i};
+                     smooth_i, dither_i, sharpen_i};
         if (cur != prev) {
             prev = cur;
             // A live setting changed. Rebuild the per-channel LUT (bakes in
@@ -299,6 +305,33 @@ static void filter_worker(filter_sys_t* sys) {
         }
         sys->history_.assign(grid.begin(), grid.end());  // smoothed colour = new history
         sys->history_valid = true;
+
+        // --- local-contrast (unsharp): crisp pad-to-pad edges that averaging
+        //     softened. grid + k*(grid - 3x3 box blur). Runs after temporal (so
+        //     the sharpening isn't smoothed away) and before dither. ---
+        if (sharpen_i != SH_OFF) {
+            const float k = (sharpen_i == SH_LIGHT) ? 0.5f : 1.0f;
+            std::vector<RGB8> sharp(grid.size());
+            auto us = [](int v, float bv, float kk) -> std::uint8_t {
+                float f = v + kk * (v - bv);
+                return static_cast<std::uint8_t>(f < 0.0f ? 0.0f : f > 255.0f ? 255.0f : std::rint(f));
+            };
+            for (int y = 0; y < rows; ++y)
+                for (int x = 0; x < cols; ++x) {
+                    long br = 0, bg = 0, bb = 0; int c = 0;
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const RGB8& n = grid[static_cast<std::size_t>(std::clamp(y + dy, 0, rows - 1)) * cols
+                                                + std::clamp(x + dx, 0, cols - 1)];
+                            br += n.r; bg += n.g; bb += n.b; ++c;
+                        }
+                    const float bbr = static_cast<float>(br) / c, bbg = static_cast<float>(bg) / c,
+                                bbb = static_cast<float>(bb) / c;
+                    const RGB8& o = grid[static_cast<std::size_t>(y) * cols + x];
+                    sharp[static_cast<std::size_t>(y) * cols + x] = { us(o.r, bbr, k), us(o.g, bbg, k), us(o.b, bbb, k) };
+                }
+            grid.swap(sharp);
+        }
 
         // --- ordered dither (last, so it isn't smoothed away): spread the
         //     device's coarse levels / posterize into a stable Bayer pattern so
@@ -441,7 +474,7 @@ static void Close(vlc_object_t* obj) {
 // How a pad's colour is derived from its source block. Average is the smooth
 // area-mean (also the fast image_Convert path); the others sample a cols*K x
 // rows*K intermediate so each pad collapses a K*K block of real pixels.
-enum ColorPick { CP_AVERAGE = 0, CP_DOMINANT = 1, CP_BRIGHTEST = 2, CP_MEDIAN = 3, CP_CENTER = 4, CP_VIBRANT = 5 };
+enum ColorPick { CP_AVERAGE = 0, CP_DOMINANT = 1, CP_BRIGHTEST = 2, CP_MEDIAN = 3, CP_CENTER = 4, CP_VIBRANT = 5, CP_SALIENT = 6 };
 
 // How source content is fitted to the (non-1:1) device grid.
 enum Fit { FIT_STRETCH = 0, FIT_COVER = 1, FIT_CONTAIN = 2 };
@@ -519,6 +552,28 @@ static RGB8 pick_block(const std::uint8_t* base, int pitch, int bx, int by, int 
         return {static_cast<std::uint8_t>(sr[best] / cnt[best]),
                 static_cast<std::uint8_t>(sg[best] / cnt[best]),
                 static_cast<std::uint8_t>(sb[best] / cnt[best])};
+    }
+    case CP_SALIENT: {  // area-average weighted toward high-contrast (detail/subject) pixels
+        std::uint8_t rs[64], gs[64], bs[64];
+        int i = 0;
+        long R = 0, G = 0, B = 0;
+        for (int y = 0; y < K; ++y)
+            for (int x = 0; x < K; ++x, ++i) {
+                const std::uint8_t* p = base + static_cast<std::size_t>(by + y) * pitch + (bx + x) * 3;
+                rs[i] = p[0]; gs[i] = p[1]; bs[i] = p[2];
+                R += p[0]; G += p[1]; B += p[2];
+            }
+        const float mr = static_cast<float>(R) / i, mg = static_cast<float>(G) / i,
+                    mb = static_cast<float>(B) / i;
+        double wR = 0, wG = 0, wB = 0, wsum = 0;
+        for (int j = 0; j < i; ++j) {
+            float dr = rs[j] - mr, dg = gs[j] - mg, db = bs[j] - mb;
+            float w = 1.0f + std::sqrt(dr * dr + dg * dg + db * db) * 0.02f;  // detail weighs more
+            wR += rs[j] * w; wG += gs[j] * w; wB += bs[j] * w; wsum += w;
+        }
+        return {static_cast<std::uint8_t>(wR / wsum + 0.5),
+                static_cast<std::uint8_t>(wG / wsum + 0.5),
+                static_cast<std::uint8_t>(wB / wsum + 0.5)};
     }
     default: {  // CP_AVERAGE
         long R = 0, G = 0, B = 0;
@@ -764,9 +819,9 @@ static const char* const gridtv_device_texts[] = {
 };
 
 // Colour-pick modes for the --gridtv-colorpick dropdown.
-static const int gridtv_colorpick_values[] = { 0, 1, 2, 3, 4, 5 };
+static const int gridtv_colorpick_values[] = { 0, 1, 2, 3, 4, 5, 6 };
 static const char* const gridtv_colorpick_texts[] = {
-    "Average (smooth)", "Dominant colour (crisp)", "Brightest pixel", "Median", "Centre pixel", "Vibrant (saturated, punchy)"
+    "Average (smooth)", "Dominant colour (crisp)", "Brightest pixel", "Median", "Centre pixel", "Vibrant (saturated, punchy)", "Salient (detail-weighted)"
 };
 
 // Aspect/fit modes for the --gridtv-aspect dropdown.
@@ -785,6 +840,12 @@ static const char* const gridtv_smoothing_texts[] = {
 static const int gridtv_dither_values[] = { 0, 1 };
 static const char* const gridtv_dither_texts[] = {
     "Off", "Ordered (Bayer)"
+};
+
+// Local-contrast sharpen presets for the --gridtv-sharpen dropdown.
+static const int gridtv_sharpen_values[] = { 0, 1, 2 };
+static const char* const gridtv_sharpen_texts[] = {
+    "Off", "Light", "Strong"
 };
 
 // Colour-byte order for the --gridtv-color dropdown. Frames are RGB after VLC's
@@ -813,8 +874,8 @@ vlc_module_begin()
         "  3. Play any video. The grid lights up within a second or two.\n\n"
         "WHAT YOU CAN CHANGE LIVE\n"
         "  Brightness, gamma, LED display curve, contrast, saturation, lift, "
-        "bit depth, smoothing, dither, max FPS, colour-pick and fit all update "
-        "instantly while the video plays - no restart needed.\n\n"
+        "bit depth, smoothing, dither, sharpen, max FPS, colour-pick and fit all "
+        "update instantly while the video plays - no restart needed.\n\n"
         "WHAT NEEDS A RE-OPEN\n"
         "  'Device' and 'Custom MIDI port' are read when a media item opens. "
         "To switch hardware, stop the current item, choose the new device, then "
@@ -889,6 +950,14 @@ vlc_module_begin()
                 "on the monome (it already dithers) or where levels are effectively "
                 "continuous."), false)
         change_integer_list(gridtv_dither_values, gridtv_dither_texts)
+        change_safe()
+    add_integer("gridtv-sharpen", SH_OFF,
+                N_("Sharpen (local contrast)"), N_("A mild unsharp mask on the grid "
+                "that crisps pad-to-pad edges the downscale softened, so the image "
+                "reads a little sharper/more defined. Light is subtle; Strong is "
+                "punchy (can emphasise noise on already-busy video). No effect on a "
+                "1xN grid."), false)
+        change_integer_list(gridtv_sharpen_values, gridtv_sharpen_texts)
         change_safe()
 
     set_section(N_("Colour & tone"), N_("The look of the image on the grid."))
