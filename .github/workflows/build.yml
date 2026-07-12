@@ -97,14 +97,22 @@ jobs:
           grep -qE "scan-build: No bugs found" scan-build.log \
             || { echo "::error::clang static analyzer reported bugs (see analysis-reports artifact)"; cat scan-build.log; exit 1; }
 
-      - name: cppcheck (warning + performance) — hard gate
+      - name: cppcheck (library + tests; warning + performance) — hard gate
         run: |
-          # warning level = real issues (null/buffer/leak); style is too noisy
-          # (dtor-virtual-call false positives on our concrete device classes).
-          cppcheck --project=build-audit/compile_commands.json \
+          # Analyses the library + tests (src/ test/) only, NOT the plugin: the
+          # plugin pulls VLC's macro-heavy headers, which trip cppcheck's parser
+          # into false memleak/dangling reports (vlc_arrays.h, the module macros).
+          # The plugin is covered by the clang static analyzer step above, which
+          # parses VLC headers correctly. virtualCallInConstructor / noExplicit-
+          # Constructor are suppressed: our device classes are concrete (dtor->
+          # virtual resolves to the same class) and the single-arg ctor takes an
+          # enum class, so neither is a real hazard.
+          cppcheck src/ test/ -I include \
             --enable=warning,performance \
-            --suppress=missingIncludeSystem --suppress=syntaxError \
-            -i third_party --inline-suppr --force --error-exitcode=1
+            --suppress=missingIncludeSystem \
+            --suppress=virtualCallInConstructor \
+            --suppress=noExplicitConstructor \
+            --inline-suppr --error-exitcode=1
 
       - name: clang-tidy — informational report (overlaps scan-build; not a gate)
         run: |
